@@ -1,0 +1,45 @@
+# Python cache
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Editor temp files
+*.swp
+*.swo
+*~
+
+# System files
+.DS_Store
+
+# LiveEdit runtime artifacts
+live_edit.db
+live_edit.db-shm
+live_edit.db-wal
+
+# Test artifacts
+MagicMock/
+
+# Claude Code
+.claude/
+
+# Python build
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment
+.env
+
+# Coverage
+.coverage
+htmlcov/
+
+# tox
+.tox/
+
+# Logs
+*.log
