@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import os
+import subprocess
 import time
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -526,3 +529,79 @@ def _drain_queue(session: EditSession) -> list[dict]:
         except asyncio.QueueEmpty:
             break
     return events
+
+
+class _FakeSession:
+    """Minimal session-like object for _do_commit testing."""
+    def __init__(self, sid, wt_path, files):
+        self.id = sid
+        self.request = "test request"
+        self._worktree_path = wt_path
+        self._modified_files = files
+        self._merged = False
+        self._committed = False
+        self._commit_hash = ""
+        self._done = False
+        self._mode = "quick"
+        self._created_at = 0
+        self.emitted = []
+        self.messages = []
+
+    def emit(self, event, **kw):
+        self.emitted.append((event, kw))
+
+
+class TestDoCommitBranchOnly:
+    def test_commit_keeps_branch_does_not_merge(self, tmp_path):
+        from live_edit.vcs import GitVCS
+        from live_edit.engine import _do_commit
+        from unittest.mock import MagicMock
+
+        # Build a real git repo
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True)
+        (repo / "init.txt").write_text("init")
+        subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo), capture_output=True)
+
+        vcs = GitVCS(repo)
+        main_before = subprocess.run(
+            ["git", "rev-parse", "main"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout.strip()
+
+        wt_path = vcs.create_worktree("sess-bonly")
+        (Path(wt_path) / "new.py").write_text("print(1)")
+        session = _FakeSession("sess-bonly", wt_path, ["new.py"])
+
+        storage = MagicMock()
+        config = MagicMock()
+        config.hooks = None
+
+        import asyncio
+        asyncio.run(_do_commit(session, vcs, storage, config))
+
+        # main 未移动
+        main_after = subprocess.run(
+            ["git", "rev-parse", "main"], cwd=str(repo), capture_output=True, text=True,
+        ).stdout.strip()
+        assert main_before == main_after
+
+        # 分支存在
+        branches = subprocess.run(
+            ["git", "branch", "--list", "live-edit/sess-bonly"],
+            cwd=str(repo), capture_output=True, text=True,
+        ).stdout
+        assert "live-edit/sess-bonly" in branches
+
+        # worktree 目录已删
+        assert not os.path.isdir(wt_path)
+
+        # done 事件 message 含分支名
+        done_events = [kw for ev, kw in session.emitted if ev == "done"]
+        assert done_events, "expected a done event"
+        assert any("live-edit/sess-bonly" in kw.get("message", "") for kw in done_events)
+        assert session._committed is True
