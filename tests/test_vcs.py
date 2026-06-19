@@ -1,6 +1,9 @@
 """Tests for live_edit.vcs — VCS interface and GitVCS implementation."""
 
+import os
 import subprocess
+from pathlib import Path
+
 import pytest
 from live_edit.vcs import GitVCS, RevertPreview, RevertResult
 
@@ -127,3 +130,24 @@ class TestGitVCS:
         # Don't assert can_revert — conflicts are possible
         # Just ensure it ran without exception and returned a result
         assert isinstance(preview, RevertPreview)
+
+
+class TestRemoveWorktreeDir:
+    def test_removes_worktree_keeps_branch(self, git_repo):
+        from live_edit.vcs import GitVCS
+        vcs = GitVCS(git_repo)
+        wt_path = vcs.create_worktree("sess-keep")
+        # 在 worktree 里写文件并提交，让分支有 commit
+        (Path(wt_path) / "f.py").write_text("x")
+        vcs.commit_in_worktree(wt_path, ["f.py"], "live-edit: wip")
+
+        vcs.remove_worktree_dir(wt_path, "sess-keep")
+
+        # worktree 目录消失
+        assert not os.path.isdir(wt_path)
+        # 分支仍存在
+        branches = subprocess.run(
+            ["git", "branch", "--list", "live-edit/sess-keep"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout
+        assert "live-edit/sess-keep" in branches

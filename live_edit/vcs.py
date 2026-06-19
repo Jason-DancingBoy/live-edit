@@ -86,6 +86,10 @@ class VCS(ABC):
         """Remove a session worktree and its branch."""
         ...
 
+    def remove_worktree_dir(self, worktree_path: str, session_id: str):
+        """Remove the worktree directory only; keep the live-edit/<session_id> branch."""
+        ...
+
     @abstractmethod
     def commit_in_worktree(self, worktree_path: str, files: list[str], message: str) -> str:
         """Commit changes inside a worktree. Returns the commit hash."""
@@ -206,6 +210,15 @@ class GitVCS(VCS):
             capture_output=True, text=True, timeout=10, cwd=self.repo_path,
         )
         logger.info("Removed worktree for session %s", session_id)
+
+    def remove_worktree_dir(self, worktree_path: str, session_id: str):
+        """Remove worktree dir only; keep the branch live-edit/<session_id>."""
+        args = ["git", "worktree", "remove", "--force", worktree_path]
+        subprocess.run(
+            args,
+            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+        )
+        logger.info("Removed worktree dir (kept branch) for session %s", session_id)
 
     def list_worktrees(self) -> list[dict]:
         """Return active live-edit worktrees with branch and session info."""
