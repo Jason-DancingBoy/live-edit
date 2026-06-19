@@ -111,6 +111,14 @@ class VCS(ABC):
         ...
 
     @abstractmethod
+    def list_unmerged_branches(self) -> list[dict]:
+        """Return live-edit/* branches not yet merged into main.
+
+        Each item: {session_id, branch, commit_hash, commit_time, subject}.
+        """
+        ...
+
+    @abstractmethod
     def get_main_branch(self) -> str:
         """Return the name of the main branch (main or master)."""
         ...
@@ -266,6 +274,41 @@ class GitVCS(VCS):
                 wt["session_id"] = branch[len("live-edit/"):]
                 live_edit_wts.append(wt)
         return live_edit_wts
+
+    def list_unmerged_branches(self) -> list[dict]:
+        """Return live-edit/* branches not yet merged into main."""
+        main = self.get_main_branch()
+        result = subprocess.run(
+            ["git", "for-each-ref",
+             "--format=%(refname:short)|%(objectname:short)|%(committerdate:iso)|%(subject)",
+             "refs/heads/live-edit/*"],
+            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+        )
+        out = []
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|", 3)
+            if len(parts) < 4:
+                continue
+            branch, short_hash, ctime, subject = parts
+            # Skip if already merged into main
+            anc = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", branch, main],
+                capture_output=True, cwd=self.repo_path,
+            )
+            if anc.returncode == 0:
+                continue
+            session_id = branch[len("live-edit/"):]
+            out.append({
+                "session_id": session_id,
+                "branch": branch,
+                "commit_hash": short_hash,
+                "commit_time": ctime,
+                "subject": subject,
+            })
+        return out
 
     # ── Commit / merge (worktree-aware) ──
 

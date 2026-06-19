@@ -183,3 +183,31 @@ class TestDiscardSessionBranch:
             cwd=str(git_repo), capture_output=True, text=True,
         ).stdout
         assert "live-edit/sess-d2" not in branches
+
+
+class TestListUnmergedBranches:
+    def test_returns_only_unmerged(self, git_repo):
+        from live_edit.vcs import GitVCS
+        vcs = GitVCS(git_repo)
+
+        # 分支 A：提交后合入 main
+        wt_a = vcs.create_worktree("sess-a")
+        (Path(wt_a) / "a.py").write_text("a")
+        h_a = vcs.commit_in_worktree(wt_a, ["a.py"], "live-edit: A")
+        vcs.merge_commit(h_a, "live-edit: A")
+        vcs.discard_session_branch("sess-a", worktree_path=wt_a)
+
+        # 分支 B：提交但不合入
+        wt_b = vcs.create_worktree("sess-b")
+        (Path(wt_b) / "b.py").write_text("b")
+        vcs.commit_in_worktree(wt_b, ["b.py"], "live-edit: B")
+        vcs.remove_worktree_dir(wt_b, "sess-b")
+
+        result = vcs.list_unmerged_branches()
+        sids = [r["session_id"] for r in result]
+        assert "sess-b" in sids
+        assert "sess-a" not in sids
+        b_entry = next(r for r in result if r["session_id"] == "sess-b")
+        assert b_entry["branch"] == "live-edit/sess-b"
+        assert len(b_entry["commit_hash"]) > 0
+        assert "B" in b_entry["subject"]
