@@ -690,4 +690,24 @@ def setup_live_edit(
             logger.error("admin_merge error: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.post("/admin/branches/{session_id}/delete")
+    async def admin_delete_branch(session_id: str,
+                                  x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Delete live-edit/<session_id> branch and any leftover worktree.
+        Requires X-Admin-Key."""
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            vcs.discard_session_branch(session_id)
+            # Best-effort: remove session from storage
+            try:
+                if hasattr(storage, "remove"):
+                    storage.remove(session_id)
+            except Exception as _e:
+                logger.warning("storage remove for %s failed: %s", session_id, _e)
+            return {"ok": True}
+        except Exception as e:
+            logger.error("admin_delete_branch error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router

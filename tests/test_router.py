@@ -378,3 +378,22 @@ class TestAdminBranchMerge:
     def test_merge_rejects_without_admin_key(self, branch_client):
         resp = branch_client.post("/live-edit/admin/branches/s1/merge")
         assert resp.status_code == 403
+
+
+class TestAdminBranchDelete:
+    def test_delete_success(self, branch_client, branch_app):
+        vcs = branch_app.state.vcs
+        vcs.discard_session_branch = MagicMock()
+        storage = branch_app.state.storage
+
+        resp = branch_client.post(
+            "/live-edit/admin/branches/s1/delete",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        vcs.discard_session_branch.assert_called_once_with("s1")
+
+    def test_delete_rejects_without_admin_key(self, branch_client):
+        resp = branch_client.post("/live-edit/admin/branches/s1/delete")
+        assert resp.status_code == 403
