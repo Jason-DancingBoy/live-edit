@@ -302,7 +302,10 @@ async def _build_system_prompt(config: Config, mode: str) -> str:
 
 async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
                      config=None):
-    """Commit in worktree, merge to main branch, clean up worktree.
+    """Commit in worktree, keep the change on the session branch, clean up worktree.
+
+    Does NOT merge into main — the change stays on live-edit/<session_id> for
+    manual merge via admin UI or git CLI.
 
     If config.hooks.pre_commit is set, runs that command in the worktree
     before committing. A non-zero exit aborts the commit.
@@ -335,22 +338,16 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         # Step 1: commit inside the worktree
         wt_hash = vcs.commit_in_worktree(
             session._worktree_path, session._modified_files, msg)
-        # Step 2: merge the worktree commit into the main branch
-        merge_hash = vcs.merge_commit(wt_hash, msg)
-        # Step 3: remove the worktree (branch merged, no longer needed)
-        vcs.remove_worktree(session._worktree_path, session.id)
-        session._merged = True
-
-        session._commit_hash = merge_hash
+        # Step 2: remove worktree dir but KEEP the branch
+        vcs.remove_worktree_dir(session._worktree_path, session.id)
+        session._merged = False
+        session._commit_hash = wt_hash
         session._committed = True
         session.emit("done", committed=True, commit_hash=session._commit_hash,
-                     message="更改已提交。刷新页面即可看到效果。", can_continue=True)
-        logger.info("Session %s: committed %s", session.id, session._commit_hash)
-    except RuntimeError as e:
-        # Merge conflict
-        logger.error("Merge conflict for session %s: %s", session.id, e)
-        vcs.abort_merge()
-        session.emit("error", error=f"合并冲突：{e}. 请手动解决或重新提交。")
+                     message=f"改动已保存到分支 live-edit/{session.id}，可在管理页面合入 main 后生效。",
+                     can_continue=True)
+        logger.info("Session %s: committed %s (branch kept, not merged)",
+                    session.id, session._commit_hash)
     except Exception as e:
         logger.error("Commit error: %s", e)
         session.emit("error", error=f"提交失败: {e}")
@@ -660,7 +657,7 @@ async def run_edit_session(
                 else:
                     # Rollback: just remove the worktree, no merge
                     try:
-                        vcs.remove_worktree(session._worktree_path, session.id, force=True)
+                        vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
                         session._merged = True
                     except Exception:
                         pass
@@ -681,7 +678,7 @@ async def run_edit_session(
         # Clean up worktree if not merged/removed yet (e.g. exception before commit)
         if not session._merged and session._worktree_path:
             try:
-                vcs.remove_worktree(session._worktree_path, session.id, force=True)
+                vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
                 session._merged = True
             except Exception:
                 pass

@@ -609,11 +609,105 @@ def setup_live_edit(
             wts = vcs.list_worktrees()
             for wt in wts:
                 if wt.get("session_id") == session_id:
-                    vcs.remove_worktree(wt["path"], session_id, force=True)
+                    vcs.discard_session_branch(session_id, worktree_path=wt["path"])
                     return {"ok": True, "message": f"已清理 worktree: {session_id}"}
             return {"ok": False, "message": f"未找到 worktree: {session_id}"}
         except Exception as e:
             logger.error("admin_cleanup error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/admin/branches")
+    async def admin_list_unmerged_branches(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """List live-edit branches not yet merged into main. Requires X-Admin-Key."""
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            raw = vcs.list_unmerged_branches()
+            branches = []
+            for r in raw:
+                sid = r.get("session_id", "")
+                summary = ""
+                detail = storage.get_session_detail(sid) if sid else None
+                if detail:
+                    summary = (detail.get("request") or "")[:200]
+                r["summary"] = summary
+                branches.append(r)
+            return {"branches": branches}
+        except Exception as e:
+            logger.error("admin_list_branches error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/admin/branches/{session_id}/merge")
+    async def admin_merge_branch(session_id: str,
+                                 x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Merge live-edit/<session_id> into main. Requires X-Admin-Key.
+
+        On conflict: aborts the merge, returns 409 with conflict=true,
+        and keeps the branch for manual resolution.
+        """
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        branch = f"live-edit/{session_id}"
+        try:
+            # Verify branch exists
+            import subprocess as _sp
+            repo_cwd = vcs.repo_path if hasattr(vcs, "repo_path") else None
+            check = _sp.run(
+                ["git", "rev-parse", "--verify", branch],
+                capture_output=True, cwd=repo_cwd,
+            )
+            if check.returncode != 0:
+                raise HTTPException(status_code=404, detail=f"分支不存在: {branch}")
+
+            # Resolve branch tip
+            tip = _sp.run(
+                ["git", "rev-parse", branch],
+                capture_output=True, text=True, cwd=repo_cwd,
+            ).stdout.strip()
+
+            msg = f"live-edit: merge {branch}"
+            merge_hash = vcs.merge_commit(tip, msg)
+            # Branch merged — safe to delete
+            try:
+                vcs.discard_session_branch(session_id)
+            except Exception as _e:
+                logger.warning("post-merge branch delete failed for %s: %s", session_id, _e)
+            return {"ok": True, "commit_hash": merge_hash}
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            # Merge conflict
+            try:
+                vcs.abort_merge()
+            except Exception:
+                pass
+            logger.warning("merge conflict for %s: %s", session_id, e)
+            return JSONResponse(
+                status_code=409,
+                content={"detail": f"合并冲突，请手动解决: {e}", "conflict": True},
+            )
+        except Exception as e:
+            logger.error("admin_merge error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/admin/branches/{session_id}/delete")
+    async def admin_delete_branch(session_id: str,
+                                  x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Delete live-edit/<session_id> branch and any leftover worktree.
+        Requires X-Admin-Key."""
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            vcs.discard_session_branch(session_id)
+            # Best-effort: remove session from storage
+            try:
+                if hasattr(storage, "remove"):
+                    storage.remove(session_id)
+            except Exception as _e:
+                logger.warning("storage remove for %s failed: %s", session_id, _e)
+            return {"ok": True}
+        except Exception as e:
+            logger.error("admin_delete_branch error: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
     return router
