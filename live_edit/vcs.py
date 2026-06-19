@@ -82,8 +82,8 @@ class VCS(ABC):
         ...
 
     @abstractmethod
-    def remove_worktree(self, worktree_path: str, session_id: str, force: bool = False):
-        """Remove a session worktree and its branch."""
+    def discard_session_branch(self, session_id: str, worktree_path: str = ""):
+        """Remove the worktree (if still present) and delete branch live-edit/<session_id>."""
         ...
 
     def remove_worktree_dir(self, worktree_path: str, session_id: str):
@@ -165,7 +165,7 @@ class GitVCS(VCS):
                 continue
             if path in registered:
                 try:
-                    self.remove_worktree(path, name, force=True)
+                    self.discard_session_branch(name, worktree_path=path)
                     logger.info("Cleaned up stale worktree: %s", path)
                 except Exception as e:
                     logger.warning("Failed to remove registered worktree %s: %s", path, e)
@@ -195,21 +195,28 @@ class GitVCS(VCS):
         logger.info("Created worktree for session %s at %s", session_id, worktree_path)
         return worktree_path
 
-    def remove_worktree(self, worktree_path: str, session_id: str, force: bool = False):
-        args = ["git", "worktree", "remove"]
-        if force:
-            args.append("--force")
-        args.append(worktree_path)
-        subprocess.run(
-            args,
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
-        )
+    def discard_session_branch(self, session_id: str, worktree_path: str = ""):
+        """Remove worktree (if present) and delete branch live-edit/<session_id>.
+
+        Tolerant: if the worktree dir is already gone, just delete the branch.
+        """
+        # Resolve worktree path if not provided
+        if not worktree_path:
+            for wt in self.list_worktrees():
+                if wt.get("session_id") == session_id:
+                    worktree_path = wt.get("path", "")
+                    break
+        if worktree_path and os.path.isdir(worktree_path):
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", worktree_path],
+                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            )
         # Delete the session branch from the main repo
         subprocess.run(
             ["git", "branch", "-D", f"live-edit/{session_id}"],
             capture_output=True, text=True, timeout=10, cwd=self.repo_path,
         )
-        logger.info("Removed worktree for session %s", session_id)
+        logger.info("Discarded session branch live-edit/%s", session_id)
 
     def remove_worktree_dir(self, worktree_path: str, session_id: str):
         """Remove worktree dir only; keep the branch live-edit/<session_id>."""

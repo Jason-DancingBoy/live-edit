@@ -151,3 +151,35 @@ class TestRemoveWorktreeDir:
             cwd=str(git_repo), capture_output=True, text=True,
         ).stdout
         assert "live-edit/sess-keep" in branches
+
+
+class TestDiscardSessionBranch:
+    def test_discards_worktree_and_branch(self, git_repo):
+        from live_edit.vcs import GitVCS
+        vcs = GitVCS(git_repo)
+        wt_path = vcs.create_worktree("sess-d")
+        (Path(wt_path) / "f.py").write_text("x")
+        vcs.commit_in_worktree(wt_path, ["f.py"], "live-edit: wip")
+
+        vcs.discard_session_branch("sess-d")
+
+        assert not os.path.isdir(wt_path)
+        branches = subprocess.run(
+            ["git", "branch", "--list", "live-edit/sess-d"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout
+        assert "live-edit/sess-d" not in branches
+
+    def test_discard_tolerates_already_removed_worktree(self, git_repo):
+        from live_edit.vcs import GitVCS
+        vcs = GitVCS(git_repo)
+        wt_path = vcs.create_worktree("sess-d2")
+        vcs.remove_worktree_dir(wt_path, "sess-d2")  # worktree 已删，分支还在
+
+        # 不应抛异常，分支应被删
+        vcs.discard_session_branch("sess-d2")
+        branches = subprocess.run(
+            ["git", "branch", "--list", "live-edit/sess-d2"],
+            cwd=str(git_repo), capture_output=True, text=True,
+        ).stdout
+        assert "live-edit/sess-d2" not in branches

@@ -338,7 +338,7 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         # Step 2: merge the worktree commit into the main branch
         merge_hash = vcs.merge_commit(wt_hash, msg)
         # Step 3: remove the worktree (branch merged, no longer needed)
-        vcs.remove_worktree(session._worktree_path, session.id)
+        vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
         session._merged = True
 
         session._commit_hash = merge_hash
@@ -660,7 +660,7 @@ async def run_edit_session(
                 else:
                     # Rollback: just remove the worktree, no merge
                     try:
-                        vcs.remove_worktree(session._worktree_path, session.id, force=True)
+                        vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
                         session._merged = True
                     except Exception:
                         pass
@@ -681,7 +681,7 @@ async def run_edit_session(
         # Clean up worktree if not merged/removed yet (e.g. exception before commit)
         if not session._merged and session._worktree_path:
             try:
-                vcs.remove_worktree(session._worktree_path, session.id, force=True)
+                vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
                 session._merged = True
             except Exception:
                 pass

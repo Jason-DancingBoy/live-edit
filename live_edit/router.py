@@ -609,7 +609,7 @@ def setup_live_edit(
             wts = vcs.list_worktrees()
             for wt in wts:
                 if wt.get("session_id") == session_id:
-                    vcs.remove_worktree(wt["path"], session_id, force=True)
+                    vcs.discard_session_branch(session_id, worktree_path=wt["path"])
                     return {"ok": True, "message": f"已清理 worktree: {session_id}"}
             return {"ok": False, "message": f"未找到 worktree: {session_id}"}
         except Exception as e:
