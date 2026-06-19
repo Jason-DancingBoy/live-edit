@@ -637,4 +637,57 @@ def setup_live_edit(
             logger.error("admin_list_branches error: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.post("/admin/branches/{session_id}/merge")
+    async def admin_merge_branch(session_id: str,
+                                 x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Merge live-edit/<session_id> into main. Requires X-Admin-Key.
+
+        On conflict: aborts the merge, returns 409 with conflict=true,
+        and keeps the branch for manual resolution.
+        """
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        branch = f"live-edit/{session_id}"
+        try:
+            # Verify branch exists
+            import subprocess as _sp
+            repo_cwd = vcs.repo_path if hasattr(vcs, "repo_path") else None
+            check = _sp.run(
+                ["git", "rev-parse", "--verify", branch],
+                capture_output=True, cwd=repo_cwd,
+            )
+            if check.returncode != 0:
+                raise HTTPException(status_code=404, detail=f"分支不存在: {branch}")
+
+            # Resolve branch tip
+            tip = _sp.run(
+                ["git", "rev-parse", branch],
+                capture_output=True, text=True, cwd=repo_cwd,
+            ).stdout.strip()
+
+            msg = f"live-edit: merge {branch}"
+            merge_hash = vcs.merge_commit(tip, msg)
+            # Branch merged — safe to delete
+            try:
+                vcs.discard_session_branch(session_id)
+            except Exception as _e:
+                logger.warning("post-merge branch delete failed for %s: %s", session_id, _e)
+            return {"ok": True, "commit_hash": merge_hash}
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            # Merge conflict
+            try:
+                vcs.abort_merge()
+            except Exception:
+                pass
+            logger.warning("merge conflict for %s: %s", session_id, e)
+            return JSONResponse(
+                status_code=409,
+                content={"detail": f"合并冲突，请手动解决: {e}", "conflict": True},
+            )
+        except Exception as e:
+            logger.error("admin_merge error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router

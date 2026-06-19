@@ -281,6 +281,18 @@ communication_rules = "Use technical terms."
 """)
     mock_provider = FakeProvider()
     mock_vcs = MagicMock()
+    # Back vcs.repo_path with a real git repo so the merge endpoint's
+    # subprocess `git rev-parse` calls resolve live-edit/s1.
+    import subprocess as _sp
+    _sp.run(["git", "init", "-q"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "init.txt").write_text("init")
+    _sp.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "branch", "-M", "main"], cwd=str(tmp_path), capture_output=True)
+    _sp.run(["git", "branch", "live-edit/s1"], cwd=str(tmp_path), capture_output=True)
+    mock_vcs.repo_path = str(tmp_path)
     mock_vcs.list_unmerged_branches.return_value = [
         {"session_id": "s1", "branch": "live-edit/s1",
          "commit_hash": "abc1234", "commit_time": "2026-06-19 12:00:00 +0800",
@@ -328,4 +340,41 @@ class TestAdminBranchesList:
 
     def test_rejects_without_admin_key(self, branch_client):
         resp = branch_client.get("/live-edit/admin/branches")
+        assert resp.status_code == 403
+
+
+class TestAdminBranchMerge:
+    def test_merge_success(self, branch_client, branch_app):
+        vcs = branch_app.state.vcs
+        vcs.merge_commit.return_value = "mergehash9"
+        # list_unmerged_branches 现在应返回空（已合入+清理）
+        vcs.list_unmerged_branches.return_value = []
+        vcs.discard_session_branch = MagicMock()
+
+        resp = branch_client.post(
+            "/live-edit/admin/branches/s1/merge",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["commit_hash"] == "mergehash9"
+        vcs.merge_commit.assert_called_once()
+
+    def test_merge_conflict_returns_409(self, branch_client, branch_app):
+        vcs = branch_app.state.vcs
+        vcs.merge_commit.side_effect = RuntimeError("merge conflict in a.py")
+        vcs.abort_merge = MagicMock()
+
+        resp = branch_client.post(
+            "/live-edit/admin/branches/s1/merge",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data.get("conflict") is True
+        vcs.abort_merge.assert_called_once()
+
+    def test_merge_rejects_without_admin_key(self, branch_client):
+        resp = branch_client.post("/live-edit/admin/branches/s1/merge")
         assert resp.status_code == 403
