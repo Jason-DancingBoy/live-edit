@@ -1,6 +1,7 @@
 """Tests for live_edit.router — FastAPI endpoints."""
 
 import json
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
@@ -231,3 +232,100 @@ class TestHealthCheck:
     def test_health_endpoint(self, client):
         response = client.get("/live-edit/health")
         assert response.status_code == 200
+
+
+@pytest.fixture
+def branch_app(tmp_path):
+    """App fixture exposing vcs/storage mocks for branch endpoint tests."""
+    from live_edit.router import setup_live_edit
+    config_path = tmp_path / ".live-edit.toml"
+    config_path.write_text("""
+[project]
+name = "TestApp"
+language = "python"
+root = "."
+[llm]
+provider = "anthropic_compatible"
+api_url = "https://api.example.com/v1/messages"
+api_key_env = "FAKE_KEY"
+model = "test-model"
+[safety]
+allowed_dirs = ["."]
+[timeouts]
+api_request = 180
+shell_command = 30
+[sessions]
+max_active = 10
+[hooks]
+[ui]
+default_mode = "quick"
+[modes.quick]
+label = "快速修改"
+approval = "per_tool"
+tools = "write"
+approve_for = ["edit_file", "write_file"]
+[modes.quick.prompt]
+base = "You are a helpful AI."
+user_persona = "Non-technical user."
+communication_rules = "Use Chinese."
+[modes.deep]
+label = "深度开发"
+approval = "final"
+tools = "all"
+[modes.deep.prompt]
+base = "You are a dev assistant."
+user_persona = "Developer."
+communication_rules = "Use technical terms."
+[errors.quick]
+[errors.deep]
+""")
+    mock_provider = FakeProvider()
+    mock_vcs = MagicMock()
+    mock_vcs.list_unmerged_branches.return_value = [
+        {"session_id": "s1", "branch": "live-edit/s1",
+         "commit_hash": "abc1234", "commit_time": "2026-06-19 12:00:00 +0800",
+         "subject": "live-edit: fix button"},
+    ]
+    mock_storage = MagicMock()
+    mock_storage.get_session_detail.return_value = {
+        "session_id": "s1", "request": "Fix the button color", "committed": 1,
+        "commit_hash": "abc1234", "files": '["a.py"]', "mode": "quick",
+        "messages": "[]",
+    }
+    router = setup_live_edit(
+        project_root=str(tmp_path),
+        config_path=str(config_path),
+        provider=mock_provider,
+        storage=mock_storage,
+        vcs=mock_vcs,
+        admin_key="admin-secret",
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.state.vcs = mock_vcs
+    app.state.storage = mock_storage
+    return app
+
+
+@pytest.fixture
+def branch_client(branch_app):
+    return TestClient(branch_app)
+
+
+class TestAdminBranchesList:
+    def test_lists_unmerged_with_summary(self, branch_client):
+        resp = branch_client.get(
+            "/live-edit/admin/branches",
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "branches" in data
+        assert len(data["branches"]) == 1
+        b = data["branches"][0]
+        assert b["session_id"] == "s1"
+        assert b["summary"] == "Fix the button color"
+
+    def test_rejects_without_admin_key(self, branch_client):
+        resp = branch_client.get("/live-edit/admin/branches")
+        assert resp.status_code == 403

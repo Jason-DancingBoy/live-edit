@@ -616,4 +616,25 @@ def setup_live_edit(
             logger.error("admin_cleanup error: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.get("/admin/branches")
+    async def admin_list_unmerged_branches(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """List live-edit branches not yet merged into main. Requires X-Admin-Key."""
+        if not admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            raw = vcs.list_unmerged_branches()
+            branches = []
+            for r in raw:
+                sid = r.get("session_id", "")
+                summary = ""
+                detail = storage.get_session_detail(sid) if sid else None
+                if detail:
+                    summary = (detail.get("request") or "")[:200]
+                r["summary"] = summary
+                branches.append(r)
+            return {"branches": branches}
+        except Exception as e:
+            logger.error("admin_list_branches error: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     return router
