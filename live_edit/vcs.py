@@ -13,6 +13,23 @@ logger = logging.getLogger("live-edit.vcs")
 _WORKTREE_ROOT = "/tmp/live-edit"
 
 
+def _symlink_config(repo_path: str, worktree_path: str, filename: str):
+    """Symlink a config file from repo to worktree if it exists and isn't tracked by git.
+
+    Some config files (like .live-edit.toml) are gitignored and don't appear in
+    worktrees, but are needed by the preview server.
+    """
+    import os as _os
+    src = _os.path.join(repo_path, filename)
+    src = _os.path.abspath(src)
+    dst = _os.path.join(worktree_path, filename)
+    if _os.path.exists(src) and not _os.path.exists(dst):
+        try:
+            _os.symlink(src, dst)
+        except OSError:
+            pass
+
+
 @dataclass
 class RevertPreview:
     ok: bool
@@ -154,6 +171,8 @@ class GitVCS(VCS):
         """Remove leftover worktrees from crashed sessions."""
         if not os.path.isdir(_WORKTREE_ROOT):
             return
+        # Resolve repo_path so we can detect when running inside a worktree
+        my_path = os.path.abspath(self.repo_path)
         # Get list of registered worktrees
         try:
             result = subprocess.run(
@@ -169,7 +188,10 @@ class GitVCS(VCS):
 
         for name in os.listdir(_WORKTREE_ROOT):
             path = os.path.join(_WORKTREE_ROOT, name)
-            if not os.path.isdir(path):
+            if not os.path.isdir(path) or os.path.islink(path):
+                continue  # skip symlinks (e.g. live-edit -> package source)
+            # Skip the worktree this process is running from (preview server)
+            if os.path.abspath(path) == my_path:
                 continue
             if path in registered:
                 try:
@@ -200,6 +222,10 @@ class GitVCS(VCS):
             capture_output=True, text=True, timeout=10,
             check=True,
         )
+        # Symlink config files that aren't tracked by git but are needed
+        # by the preview server (e.g. .live-edit.toml).
+        _symlink_config(self.repo_path, worktree_path, ".live-edit.toml")
+
         logger.info("Created worktree for session %s at %s", session_id, worktree_path)
         return worktree_path
 

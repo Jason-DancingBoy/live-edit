@@ -605,6 +605,7 @@ def setup_live_edit(
             session = session_store.get(session_id)
             if session:
                 session_store.remove(session_id)
+            await preview_manager.stop(session_id)
             # Find and remove the worktree
             wts = vcs.list_worktrees()
             for wt in wts:
@@ -667,6 +668,7 @@ def setup_live_edit(
 
             msg = f"live-edit: merge {branch}"
             merge_hash = vcs.merge_commit(tip, msg)
+            await preview_manager.stop(session_id)
             # Branch merged — safe to delete
             try:
                 vcs.discard_session_branch(session_id)
@@ -698,6 +700,7 @@ def setup_live_edit(
         if not admin_key or x_admin_key != admin_key:
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
+            await preview_manager.stop(session_id)
             vcs.discard_session_branch(session_id)
             # Best-effort: remove session from storage
             try:

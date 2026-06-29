@@ -338,13 +338,22 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         # Step 1: commit inside the worktree
         wt_hash = vcs.commit_in_worktree(
             session._worktree_path, session._modified_files, msg)
-        # Step 2: remove worktree dir but KEEP the branch
-        vcs.remove_worktree_dir(session._worktree_path, session.id)
-        session._merged = False
+        # Step 2: keep or remove worktree dir; KEEP the branch
+        if session._preview_url:
+            # Preview is running — keep worktree dir so preview can serve files.
+            # Admin merge/delete/cleanup endpoints handle cleanup later.
+            pass
+        else:
+            vcs.remove_worktree_dir(session._worktree_path, session.id)
+        session._merged = True  # prevent finally block from deleting the branch
+        session._worktree_path = ""  # prevent finally block from removing worktree
         session._commit_hash = wt_hash
         session._committed = True
+        preview_note = ""
+        if session._preview_url:
+            preview_note = f" 预览地址: {session._preview_url}/app"
         session.emit("done", committed=True, commit_hash=session._commit_hash,
-                     message=f"改动已保存到分支 live-edit/{session.id}，可在管理页面合入 main 后生效。",
+                     message=f"改动已保存到分支 live-edit/{session.id}，可在管理页面合入 main 后生效。{preview_note}",
                      can_continue=True)
         logger.info("Session %s: committed %s (branch kept, not merged)",
                     session.id, session._commit_hash)
@@ -383,7 +392,7 @@ async def run_edit_session(
         preview_url = await preview_manager.start(session.id, session._worktree_path)
         if preview_url:
             session._preview_url = preview_url
-            session.emit("preview_ready", url=preview_url)
+            session.emit("preview_ready", url=f"{preview_url}/app")
 
     if continue_msg and session.messages:
         messages = session.messages
@@ -405,7 +414,7 @@ async def run_edit_session(
         session._preview_announced = True
         messages.append({
             "role": "user",
-            "content": f"预览服务器已启动: {session._preview_url}\n请在回复中告知用户可以通过此链接预览修改效果。",
+            "content": f"预览服务器已启动: {session._preview_url}/app\n请在回复中告知用户可以通过此链接预览修改效果。",
         })
 
     max_rounds = config.timeouts.max_rounds if config and config.timeouts else 15
@@ -672,8 +681,10 @@ async def run_edit_session(
         session._done = True
         session.messages = messages
         _persist_session(session, storage, messages)
-        # Stop preview server before cleaning up worktree
-        if preview_manager:
+        # Stop preview server before cleaning up worktree.
+        # Keep it running when the session committed successfully — the user
+        # may want to keep previewing changes until admin merges the branch.
+        if preview_manager and not session._committed:
             await preview_manager.stop(session.id)
         # Clean up worktree if not merged/removed yet (e.g. exception before commit)
         if not session._merged and session._worktree_path:

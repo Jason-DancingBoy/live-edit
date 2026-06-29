@@ -91,7 +91,7 @@ class PreviewManager:
                 cwd=worktree_path,
                 env=os.environ,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
         except Exception as e:
             logger.warning("Preview [%s]: failed to spawn process: %s", session_id, e)
@@ -108,8 +108,14 @@ class PreviewManager:
 
         while asyncio.get_event_loop().time() < deadline:
             if proc.returncode is not None:
-                logger.warning("Preview [%s]: process exited early (code=%d)",
-                               session_id, proc.returncode)
+                stderr_text = ""
+                try:
+                    stderr_bytes = await proc.stderr.read()
+                    stderr_text = stderr_bytes.decode("utf-8", errors="replace")[-500:]
+                except Exception:
+                    pass
+                logger.warning("Preview [%s]: process exited early (code=%d). stderr: %s",
+                               session_id, proc.returncode, stderr_text or "(empty)")
                 await self.stop(session_id)
                 return None
             try:

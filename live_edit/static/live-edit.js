@@ -18,6 +18,7 @@
   let currentSessionId = null;
   let eventSource = null;
   let isStreaming = false;
+  let previewUrl = null;
 
   // ── DOM Construction ──
 
@@ -277,6 +278,10 @@
         addFinalApproval(event);
         break;
 
+      case "preview_ready":
+        showPreviewBanner(event.url);
+        break;
+
       case "done":
         addEvent("done", { message: event.message || "完成" });
         currentSessionId = null;
@@ -293,6 +298,34 @@
   function clearTimeline() {
     const tl = document.getElementById("le-timeline");
     tl.innerHTML = "";
+    removePreviewBanner();
+  }
+
+  function showPreviewBanner(url) {
+    previewUrl = url;
+    removePreviewBanner();
+    const body = document.getElementById("le-body");
+    const inputArea = body.querySelector(".le-input-area");
+    const banner = document.createElement("div");
+    banner.id = "le-preview-banner";
+    banner.innerHTML = `
+      <div class="le-preview-banner-inner">
+        <span class="le-preview-icon">&#9654;</span>
+        <span class="le-preview-text">预览已就绪</span>
+        <a class="le-preview-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">打开预览 &#8599;</a>
+      </div>
+    `;
+    if (inputArea && inputArea.nextSibling) {
+      body.insertBefore(banner, inputArea.nextSibling);
+    } else {
+      body.appendChild(banner);
+    }
+  }
+
+  function removePreviewBanner() {
+    const banner = document.getElementById("le-preview-banner");
+    if (banner) banner.remove();
+    previewUrl = null;
   }
 
   function addEvent(type, data) {
