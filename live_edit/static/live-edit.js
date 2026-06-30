@@ -19,6 +19,8 @@
   let eventSource = null;
   let isStreaming = false;
   let previewUrl = null;
+  let evalEl = null;
+  let evalStages = null;
 
   // ── DOM Construction ──
 
@@ -290,6 +292,19 @@
       case "error":
         addError(event.error || "未知错误");
         break;
+
+      case "eval_started":
+        _showEvalProgress(event.stages);
+        break;
+      case "eval_stage":
+        _updateEvalStage(event.stage, event.status, event.error);
+        break;
+      case "eval_retry":
+        _showEvalRetry(event.round, event.reason);
+        break;
+      case "eval_complete":
+        _finishEvalProgress(event.passed, event.report);
+        break;
     }
   }
 
@@ -326,6 +341,76 @@
     const banner = document.getElementById("le-preview-banner");
     if (banner) banner.remove();
     previewUrl = null;
+  }
+
+  // ── Evaluation progress UI ──
+
+  function _showEvalProgress(stages) {
+    const el = evalEl || _createEvalPanel();
+    el.innerHTML = '<div class="le-eval-header">正在验证修改...</div>';
+    el.style.display = "block";
+    evalStages = stages;
+    stages.forEach(function (s) {
+      const row = document.createElement("div");
+      row.className = "le-eval-stage";
+      row.id = "le-eval-" + s;
+      row.innerHTML = '<span class="le-eval-dot"></span> ' + _evalStageLabel(s);
+      el.appendChild(row);
+    });
+  }
+
+  function _updateEvalStage(stage, status, error) {
+    const row = document.getElementById("le-eval-" + stage);
+    if (!row) return;
+    const dot = row.querySelector(".le-eval-dot");
+    if (status === "running") {
+      dot.className = "le-eval-dot running";
+    } else if (status === "passed") {
+      dot.className = "le-eval-dot passed";
+    } else {
+      dot.className = "le-eval-dot failed";
+      if (error) row.innerHTML += ' <span class="le-eval-error">' + error + "</span>";
+    }
+  }
+
+  function _showEvalRetry(round, reason) {
+    const el = evalEl;
+    if (!el) return;
+    const retry = document.createElement("div");
+    retry.className = "le-eval-retry";
+    retry.textContent = "第 " + round + " 次修复: " + reason;
+    el.appendChild(retry);
+  }
+
+  function _finishEvalProgress(passed, report) {
+    const el = evalEl;
+    if (!el) return;
+    const header = el.querySelector(".le-eval-header");
+    if (passed) {
+      header.className = "le-eval-header le-eval-passed";
+      header.textContent = "验证通过";
+    } else {
+      header.className = "le-eval-header le-eval-failed";
+      header.textContent = "验证未完全通过";
+    }
+    setTimeout(function () {
+      if (el) el.style.display = "none";
+    }, 5000);
+  }
+
+  function _createEvalPanel() {
+    const el = document.createElement("div");
+    el.className = "le-eval-panel";
+    el.id = "le-eval-panel";
+    const tl = document.getElementById("le-timeline");
+    if (tl) tl.appendChild(el);
+    evalEl = el;
+    return el;
+  }
+
+  function _evalStageLabel(stage) {
+    const labels = { lint: "代码检查", test: "测试", preview: "预览", introspect: "AI 自省", html_diff: "页面对比" };
+    return labels[stage] || stage;
   }
 
   function addEvent(type, data) {

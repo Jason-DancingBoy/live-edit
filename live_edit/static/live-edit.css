@@ -383,3 +383,24 @@
   background: var(--le-border);
   border-radius: 3px;
 }
+
+/* ── Evaluation progress panel ── */
+.le-eval-panel {
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+.le-eval-header { font-weight: 600; margin-bottom: 8px; color: #ccc; }
+.le-eval-header.le-eval-passed { color: #4caf50; }
+.le-eval-header.le-eval-failed { color: #ff9800; }
+.le-eval-stage { padding: 3px 0; font-size: 13px; color: #aaa; display: flex; align-items: center; gap: 6px; }
+.le-eval-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #555; flex-shrink: 0;
+}
+.le-eval-dot.running { background: #2196f3; animation: le-pulse 0.8s infinite; }
+.le-eval-dot.passed { background: #4caf50; }
+.le-eval-dot.failed { background: #f44336; }
+.le-eval-error { color: #f44336; font-size: 12px; }
+.le-eval-retry { color: #ff9800; font-size: 12px; padding: 2px 0; }
