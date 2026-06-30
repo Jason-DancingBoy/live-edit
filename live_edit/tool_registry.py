@@ -208,7 +208,8 @@ def set_global_registry(registry: DefaultToolRegistry):
 
 
 def tool(name: str, description: str, modes: list[str] | None = None,
-         is_write: bool = False, require_approval: bool = False, timeout: int = 30):
+         is_write: bool = False, require_approval: bool = False, timeout: int = 30,
+         input_schema: dict | None = None):
     """Decorator to register a Python function as a tool in the global registry.
 
     Usage:
@@ -217,16 +218,17 @@ def tool(name: str, description: str, modes: list[str] | None = None,
             return {"ok": True}
     """
     def deco(fn):
+        schema = input_schema or {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "执行原因"},
+            },
+            "required": [],
+        }
         td = ToolDef(
             name=name,
             description=description,
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "reason": {"type": "string", "description": "执行原因"},
-                },
-                "required": [],
-            },
+            input_schema=schema,
             execute=fn,
             modes=modes,
             is_write=is_write,
