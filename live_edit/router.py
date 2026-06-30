@@ -58,6 +58,7 @@ def setup_live_edit(
     vcs: VCS | None = None,
     api_key: str = "",
     admin_key: str = "",
+    tool_registry: object | None = None,
 ) -> APIRouter:
     """Create and return a FastAPI router with all live-edit endpoints.
 
@@ -94,6 +95,19 @@ def setup_live_edit(
     max_active = getattr(config.sessions, 'max_active', 10) if hasattr(config, 'sessions') else 10
     session_store = SessionStore(max_active=max_active, ttl_seconds=ttl)
 
+    # Tool registry
+    if tool_registry is None:
+        from .tool_registry import DefaultToolRegistry, set_global_registry
+        tool_registry = DefaultToolRegistry()
+        tool_registry.load_builtin_tools()
+        tool_registry.load_toml_tools(config)
+        plugin_dir = os.path.join(project_root, "live_edit_tools")
+        tool_registry.load_plugin_tools(plugin_dir)
+        set_global_registry(tool_registry)
+
+    from .tools import _set_registry
+    _set_registry(tool_registry)
+
     # Preview manager (per-session preview services)
     preview_manager = PreviewManager(config.preview)
 
@@ -128,6 +142,7 @@ def setup_live_edit(
                     mode=mode,
                     preview_manager=preview_manager,
                     session_store=session_store,
+                    tool_registry=tool_registry,
                 )
             )
 
@@ -189,6 +204,7 @@ def setup_live_edit(
                     mode=mode,
                     preview_manager=preview_manager,
                     session_store=session_store,
+                    tool_registry=tool_registry,
                 )
             )
 
