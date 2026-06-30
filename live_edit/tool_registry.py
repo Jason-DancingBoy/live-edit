@@ -139,7 +139,7 @@ class DefaultToolRegistry(ToolRegistry):
             cmd = t["command"]
             timeout_val = t.get("timeout", 30)
 
-            async def _make_execute(cmd=cmd, timeout=timeout_val):
+            def _make_execute(cmd=cmd, timeout=timeout_val):
                 async def _exec(args, project_root, cfg):
                     resolved = cmd
                     for k, v in args.items():
