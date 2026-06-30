@@ -1,13 +1,9 @@
-"""Tool definitions, execution, and safety layer for live-edit."""
+"""Formatting helpers and backward-compatible re-exports.
 
-import os
-import re
-from .safety import safe_path, check_shell_cmd, check_write_allowed
-import subprocess
-from pathlib import Path
+New code should use live_edit.tool_registry directly.
+"""
 
-
-
+from .safety import safe_path as _safe_path, check_shell_cmd as _check_shell_cmd, check_write_allowed as _check_write_allowed
 
 
 # ── Formatting helpers ──
@@ -77,309 +73,36 @@ def _summarize_thinking(text: str, max_chars: int = 300) -> str:
     return chunk + "…"
 
 
-# ── Tool definitions (Anthropic-compatible schemas) ──
+# ── Backward-compat globals ──
 
-TOOLS = [
-    {
-        "name": "read_file",
-        "description": "读取文件内容。用于理解现有代码结构。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的文件路径"},
-                "start": {"type": "integer", "description": "起始行号（可选，1-based）"},
-                "end": {"type": "integer", "description": "结束行号（可选，1-based，含）"},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "search_code",
-        "description": "在项目中搜索代码模式（grep）。用于定位相关代码。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "搜索的正则表达式或关键词"},
-                "path": {"type": "string", "description": "搜索范围路径（可选，默认为项目根目录）"},
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "glob",
-        "description": "按文件模式查找文件。支持 ** 递归匹配，如 static/**/*.js。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "文件匹配模式，如 **/*.py, static/**"},
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "list_dir",
-        "description": "列出目录内容。用于了解项目文件结构，发现需要修改的文件位置。返回结构化条目列表（名称、是否目录、文件大小）。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的路径，默认为项目根目录"},
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "edit_file",
-        "description": "精确字符串替换编辑文件。old_string 必须在文件中唯一匹配。用于修改现有文件的部分内容。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的文件路径"},
-                "old_string": {"type": "string", "description": "要替换的原始字符串（必须精确匹配）"},
-                "new_string": {"type": "string", "description": "替换后的新字符串"},
-                "reason": {"type": "string", "description": "修改原因（向用户解释）"},
-            },
-            "required": ["path", "old_string", "new_string"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "创建新文件或完全覆写现有文件。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的文件路径"},
-                "content": {"type": "string", "description": "文件完整内容"},
-                "reason": {"type": "string", "description": "创建/覆写原因（向用户解释）"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "run_shell",
-        "description": "执行 shell 命令。可用于 git diff, git status, git log, grep, find, ls 等操作。危险命令（rm, git push, git reset --hard 等）会被自动拦截。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string", "description": "要执行的 shell 命令"},
-                "reason": {"type": "string", "description": "执行原因（向用户解释）"},
-            },
-            "required": ["cmd"],
-        },
-    },
-]
+_registry = None
 
-QA_TOOLS = [t for t in TOOLS if t["name"] in ("read_file", "search_code", "glob", "list_dir", "run_shell")]
-_WRITE_TOOLS = {"edit_file", "write_file"}
+
+def _set_registry(registry):
+    global _registry
+    _registry = registry
+
+
+TOOLS = []
+QA_TOOLS = []
+_WRITE_TOOLS = set()
+
+
+def _refresh_globals(mode: str = "quick"):
+    global TOOLS, QA_TOOLS, _WRITE_TOOLS
+    if _registry is not None:
+        TOOLS = _registry.get_tools("deep")
+        QA_TOOLS = _registry.get_tools("qa")
+        _WRITE_TOOLS = _registry.get_write_tool_names("quick")
 
 
 def get_mode_tools(mode: str, config=None) -> list[dict]:
-    """Return the tools list for a given mode."""
-    if mode == "qa":
-        return QA_TOOLS
-    return TOOLS
+    if _registry is not None:
+        return _registry.get_tools(mode)
+    return []
 
 
 async def execute_tool(name: str, args: dict, project_root: str, config=None) -> dict:
-    """Execute a tool call. Returns result dict with {ok, ...}."""
-    try:
-        if name == "read_file":
-            path = safe_path(args["path"], project_root)
-            start = args.get("start", 1) - 1
-            end = args.get("end")
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            if end:
-                lines = lines[start:end]
-            elif start > 0:
-                lines = lines[start:]
-            content = "".join(lines)
-            return {"ok": True, "path": args["path"], "content": content,
-                    "lines": len(lines)}
-
-        elif name == "search_code":
-            pattern = args["pattern"]
-            search_path = safe_path(args.get("path", "."), project_root)
-            exts = []
-            if config and hasattr(config, 'safety') and hasattr(config.safety, 'search_extensions'):
-                for ext in config.safety.search_extensions:
-                    exts += ["--include", ext]
-            if not exts:
-                exts = ["--include=*.py", "--include=*.html", "--include=*.js",
-                        "--include=*.css", "--include=*.md"]
-            try:
-                result = subprocess.run(
-                    ["grep", "-rn"] + exts + [pattern, search_path],
-                    capture_output=True, text=True, timeout=10, cwd=project_root,
-                )
-                output = result.stdout[:5000] if result.stdout else "(无匹配)"
-                count = len(result.stdout.strip().split("\n")) if result.stdout.strip() else 0
-                return {"ok": True, "pattern": pattern, "matches": output,
-                        "match_count": count}
-            except subprocess.TimeoutExpired:
-                return {"ok": False, "error": "搜索超时"}
-
-        elif name == "glob":
-            pattern = args["pattern"]
-            try:
-                from pathlib import Path as _Path
-                matches = sorted(_Path(project_root).glob(pattern))
-                files = []
-                for m in matches:
-                    if m.is_file():
-                        rel = str(m.relative_to(project_root))
-                        files.append(rel)
-                return {"ok": True, "pattern": pattern, "files": files[:50],
-                        "match_count": len(files)}
-            except Exception as e:
-                return {"ok": False, "error": f"glob 失败: {e}"}
-
-        elif name == "list_dir":
-            dir_path = safe_path(args.get("path", "."), project_root)
-            if not os.path.isdir(dir_path):
-                return {"ok": False, "error": f"路径不是目录: {args.get('path', '.')}"}
-            entries = []
-            total_files = 0
-            total_dirs = 0
-            try:
-                with os.scandir(dir_path) as it:
-                    for entry in it:
-                        try:
-                            size = entry.stat().st_size if entry.is_file() else 0
-                        except OSError:
-                            size = 0
-                        entries.append({
-                            "name": entry.name,
-                            "is_dir": entry.is_dir(),
-                            "size_bytes": size if entry.is_file() else 0,
-                        })
-                        if entry.is_dir():
-                            total_dirs += 1
-                        else:
-                            total_files += 1
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-                return {"ok": True, "path": args.get("path", "."),
-                        "entries": entries[:100], "total_files": total_files,
-                        "total_dirs": total_dirs}
-            except PermissionError:
-                return {"ok": False, "error": "无权限访问该目录"}
-
-        elif name == "edit_file":
-            path = safe_path(args["path"], project_root)
-            old = args["old_string"]
-            new = args["new_string"]
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            count = content.count(old)
-            if count == 1:
-                new_content = content.replace(old, new, 1)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                return {"ok": True, "path": args["path"], "modified": True}
-
-            if count == 0:
-                # Try whitespace-normalized matching as fallback
-                norm_old = re.sub(r'\s+', ' ', old).strip()
-                norm_content = re.sub(r'\s+', ' ', content)
-                # Find all positions where norm_old appears in norm_content
-                norm_positions = []
-                pos = 0
-                while True:
-                    idx = norm_content.find(norm_old, pos)
-                    if idx == -1:
-                        break
-                    norm_positions.append(idx)
-                    pos = idx + 1
-
-                if len(norm_positions) == 0:
-                    # Build helpful error: show first 3 lines of file to help LLM re-orient
-                    head_lines = content.strip().split("\n")[:3]
-                    head_preview = "\n".join(head_lines)[:200]
-                    return {"ok": False, "error":
-                        f"old_string 在文件中未找到。文件开头预览:\n{head_preview}"}
-
-                if len(norm_positions) == 1:
-                    # Unique fuzzy match — extract the actual text at that position
-                    norm_line_start = norm_content.rfind('\n', 0, norm_positions[0]) + 1
-                    norm_line_end = norm_content.find('\n', norm_positions[0] + len(norm_old))
-                    # Map back to original content: find the same region
-                    orig_match = content[norm_line_start:norm_line_end if norm_line_end != -1 else len(content)]
-                    new_content = content.replace(orig_match, new, 1)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(new_content)
-                    return {"ok": True, "path": args["path"], "modified": True,
-                            "matched_via": "whitespace_normalized"}
-
-                # Multiple fuzzy matches — report with line numbers
-                line_info = []
-                for pos in norm_positions[:5]:
-                    lineno = norm_content[:pos].count('\n') + 1
-                    snippet = norm_content[pos:pos + len(norm_old) + 40] + "..."
-                    line_info.append(f"  L{lineno}: ...{snippet}")
-                return {"ok": False, "error":
-                    f"old_string 模糊匹配了 {len(norm_positions)} 处（仅空白差异），请提供更多上下文:\n" +
-                    "\n".join(line_info)}
-
-            if count > 1:
-                # Multiple exact matches — report with line numbers
-                line_info = []
-                for m in re.finditer(re.escape(old), content):
-                    if len(line_info) >= 5:
-                        break
-                    lineno = content[:m.start()].count('\n') + 1
-                    ctx_start = max(0, m.start() - 20)
-                    ctx_end = min(len(content), m.end() + 40)
-                    snippet = content[ctx_start:ctx_end].replace('\n', '\\n') + "..."
-                    line_info.append(f"  L{lineno}: ...{snippet}")
-                return {"ok": False, "error":
-                    f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n" +
-                    "\n".join(line_info)}
-
-        elif name == "write_file":
-            path = safe_path(args["path"], project_root)
-            overwrite_dirs = None
-            allow_overwrite = False
-            if config and hasattr(config, 'safety'):
-                overwrite_dirs = getattr(config.safety, 'overwrite_allowed_dirs', None)
-                allow_overwrite = getattr(config.safety, 'allow_overwrite_existing', False)
-            err = check_write_allowed(args["path"], project_root,
-                                        allow_overwrite, overwrite_dirs)
-            if err:
-                return {"ok": False, "error": err}
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(args["content"])
-            return {"ok": True, "path": args["path"], "written": True,
-                    "size": len(args["content"])}
-
-        elif name == "run_shell":
-            cmd = args["cmd"]
-            err = check_shell_cmd(cmd, project_root)
-            if err:
-                return {"ok": False, "error": err}
-            timeout = 30
-            if config and hasattr(config, 'timeouts'):
-                timeout = getattr(config.timeouts, 'shell_command', 30)
-            try:
-                result = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True,
-                    timeout=timeout, cwd=project_root,
-                )
-                output = (result.stdout + result.stderr)[:5000]
-                return {"ok": True, "cmd": cmd, "output": output,
-                        "exit_code": result.returncode}
-            except subprocess.TimeoutExpired:
-                return {"ok": False, "error": "命令执行超时"}
-
-        else:
-            return {"ok": False, "error": f"未知工具: {name}"}
-
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    except FileNotFoundError:
-        return {"ok": False, "error": f"文件不存在: {args.get('path', '?')}"}
-    except Exception as e:
-        import traceback, logging
-        logging.getLogger("live-edit.tools").error(
-            "Tool %s error: %s\n%s", name, e, traceback.format_exc())
-        return {"ok": False, "error": str(e)}
+    if _registry is not None:
+        return await _registry.execute(name, args, project_root, config)
+    return {"ok": False, "error": "Tool registry not initialized"}
