@@ -79,6 +79,17 @@ class PreviewConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    enabled: bool = False
+    max_retries: int = 3
+    stages: list[str] = field(default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"])
+    test_command: str = ""
+    lint_command: str = ""
+    screenshot: bool = False
+    preview_pages: list[str] = field(default_factory=lambda: ["/"])
+
+
+@dataclass
 class UIConfig:
     default_mode: str = "quick"
 
@@ -110,6 +121,8 @@ class Config:
     modes: dict[str, ModeConfig] = field(default_factory=dict)
     errors: ErrorTranslations = field(default_factory=ErrorTranslations)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    toml_tools: list[dict] = field(default_factory=list)
 
 
 # ── TOML parsing ──
@@ -214,6 +227,19 @@ def parse_config(path: str) -> Config:
         base_url=preview_data.get("base_url", "") or _default_base,
     )
 
+    eval_data = raw.get("evaluation", {})
+    evaluation = EvaluationConfig(
+        enabled=eval_data.get("enabled", False),
+        max_retries=eval_data.get("max_retries", 3),
+        stages=eval_data.get("stages", ["lint", "test", "preview", "introspect", "html_diff"]),
+        test_command=eval_data.get("test_command", ""),
+        lint_command=eval_data.get("lint_command", ""),
+        screenshot=eval_data.get("screenshot", False),
+        preview_pages=eval_data.get("preview_pages", ["/"]),
+    )
+
+    toml_tools = raw.get("tools", [])
+
     return Config(
         project=project,
         llm=llm,
@@ -225,6 +251,8 @@ def parse_config(path: str) -> Config:
         modes=modes,
         errors=errors,
         preview=preview,
+        evaluation=evaluation,
+        toml_tools=toml_tools,
     )
 
 
