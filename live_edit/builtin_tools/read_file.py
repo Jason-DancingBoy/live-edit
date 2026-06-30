@@ -8,8 +8,11 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     path = safe_path(args["path"], project_root)
     start = args.get("start", 1) - 1
     end = args.get("end")
-    with open(path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return {"ok": False, "error": f"文件不存在: {args['path']}"}
     if end:
         lines = lines[start:end]
     elif start > 0:
