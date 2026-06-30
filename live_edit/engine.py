@@ -7,7 +7,8 @@ import os
 import time
 import traceback
 
-from .tools import TOOLS, QA_TOOLS, _WRITE_TOOLS, execute_tool, get_mode_tools, _tool_summary, _summarize_thinking
+from .tools import _tool_summary, _summarize_thinking
+from .evaluation import run_evaluation_pipeline
 from .provider import Provider
 from .storage import Storage
 from .vcs import VCS
@@ -146,6 +147,7 @@ class EditSession:
         self._merged: bool = False
         self._cancelled = asyncio.Event()
         self._preview_url: str = ""
+        self._cached_diff: str = ""
 
     def new_stream_queue(self):
         """Create a fresh queue for a new SSE connection (used for continuation)."""
@@ -281,6 +283,67 @@ def build_timeline(vcs: VCS, storage: Storage, limit: int = 30) -> list[dict]:
     return entries[:limit]
 
 
+async def _run_agent_loop_fix(session, provider, config, tool_registry, max_rounds: int = 5):
+    """Simplified agent loop for evaluation fix rounds. Fewer rounds, no nudging."""
+    if not tool_registry:
+        return
+    tools = tool_registry.get_tools(session._mode)
+    _root = session._worktree_path
+    import json as _json
+
+    for _ in range(max_rounds):
+        if session._cancelled.is_set():
+            break
+
+        content_blocks = await provider.call_with_tools(
+            messages=session.messages,
+            tools=tools,
+            on_thinking=lambda t: None,
+            on_text=lambda t: session.emit("text", text=t),
+        )
+
+        if content_blocks is None:
+            break
+
+        tool_uses = []
+        assistant_content = []
+        for block in content_blocks:
+            if block is None:
+                continue
+            if block.get("type") == "text":
+                assistant_content.append({"type": "text", "text": block.get("text", "")})
+            elif block.get("type") == "thinking":
+                assistant_content.append({"type": "thinking", "thinking": block.get("thinking", "")})
+            elif block.get("type") == "tool_use":
+                tool_uses.append(block)
+                assistant_content.append({
+                    "type": "tool_use", "id": block["id"],
+                    "name": block["name"], "input": block.get("input", {}),
+                })
+
+        if not tool_uses:
+            session.messages.append({"role": "assistant", "content": assistant_content})
+            break
+
+        tool_results = []
+        for tool in tool_uses:
+            exec_result = await tool_registry.execute(
+                tool["name"], tool.get("input", {}), _root, config)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool["id"],
+                "content": [{"type": "text", "text": _json.dumps(exec_result, ensure_ascii=False)}],
+            })
+            session.emit("tool_result", id=tool["id"], **exec_result)
+            if tool["name"] in ("edit_file", "write_file") and exec_result.get("ok"):
+                path = tool.get("input", {}).get("path", "")
+                if path and path not in session._modified_files:
+                    session._modified_files.append(path)
+
+        session.messages.append({"role": "assistant", "content": assistant_content})
+        session.messages.append({"role": "user", "content": tool_results})
+
+
 # ── Agent loop ──
 
 
@@ -372,13 +435,14 @@ async def run_edit_session(
     continue_msg: str = "",
     preview_manager=None,
     session_store: SessionStore | None = None,
+    tool_registry=None,
 ):
     """Run the agent loop for a session. Pushes SSE events to session.queue.
 
     Mode controls: system prompt, tool availability, approval behavior, error translation.
     """
     system_prompt = await _build_system_prompt(config, mode)
-    tools = get_mode_tools(mode, config)
+    tools = tool_registry.get_tools(mode) if tool_registry else []
     session._mode = mode
 
     # ── Create isolated worktree for this session ──
@@ -518,9 +582,11 @@ async def run_edit_session(
                 tool_id = tool["id"]
                 tool_input = tool.get("input", {})
 
+                tool_def = tool_registry.get_tool(tool_name) if tool_registry else None
                 needs_approval = (
                     mode == "quick"
-                    and tool_name in _WRITE_TOOLS
+                    and tool_def is not None
+                    and (tool_def.is_write or tool_def.require_approval)
                 )
 
                 if needs_approval:
@@ -559,7 +625,7 @@ async def run_edit_session(
                         auto=True,
                     )
 
-                exec_result = await execute_tool(tool_name, tool_input, _root, config)
+                exec_result = await tool_registry.execute(tool_name, tool_input, _root, config) if tool_registry else {"ok": False, "error": "No tool registry"}
                 if not exec_result.get("ok") and mode == "quick":
                     exec_result["error"] = translate_error(exec_result.get("error", ""), "quick", config=config)
                 session.emit("tool_result", id=tool_id, **exec_result)
@@ -592,6 +658,51 @@ async def run_edit_session(
                     and not session._modified_files and round_num < max_rounds - 1):
                 messages.append({"role": "user", "content": "你已经做了充分的调研。现在必须立即执行代码修改。请使用 edit_file 工具直接修改文件，不要再使用 search_code、read_file 或任何只读工具。如果你不确定 old_string 的精确内容，先用 read_file 读取关键行再立即 edit_file。"})
                 _write_less_rounds = 0   # reset to avoid repeated nudges
+
+        # ── Evaluation pipeline (with retry loop) ──
+        if config and hasattr(config, 'evaluation') and config.evaluation.enabled and session._modified_files:
+            import subprocess as _sp2
+            session.emit("eval_started", stages=config.evaluation.stages)
+            max_eval_retries = config.evaluation.max_retries
+            retry = 0
+            eval_result = None
+            while retry <= max_eval_retries:
+                eval_result = await run_evaluation_pipeline(
+                    session=session,
+                    provider=provider,
+                    config=config,
+                    preview_manager=preview_manager,
+                )
+                if eval_result.passed:
+                    break
+                retry += 1
+                if retry > max_eval_retries:
+                    break
+                session.emit("eval_retry", round=retry,
+                            reason=f"{eval_result.failed_stage} 失败，正在自动修复...")
+                fix_prompt = (
+                    f"评估阶段「{eval_result.failed_stage}」发现以下问题，请修复：\n\n"
+                    f"```\n{eval_result.failed_output[:1500]}\n```\n\n"
+                    f"请修改代码解决以上问题，然后回复「修复完成」。"
+                )
+                session.messages.append({"role": "user", "content": fix_prompt})
+                # Re-enter agent loop for fix (shorter max rounds)
+                await _run_agent_loop_fix(
+                    session=session, provider=provider, config=config,
+                    tool_registry=tool_registry, max_rounds=5,
+                )
+                # Refresh diff for next evaluation round
+                _sp2.run(["git", "-C", _root, "add", "-A"],
+                        capture_output=True, text=True, timeout=10)
+                diff_result = _sp2.run(
+                    ["git", "-C", _root, "diff", "--cached"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                session._cached_diff = diff_result.stdout.strip()
+
+            if eval_result and not eval_result.passed:
+                session.emit("eval_complete", passed=False,
+                            report=f"评估未完全通过（已达最大重试次数 {max_eval_retries}）")
 
         # After the loop: detect all changes in the worktree (including new files)
         import subprocess as _sp
@@ -634,6 +745,7 @@ async def run_edit_session(
                     capture_output=True, text=True, timeout=10,
                 )
                 diff_full = diff_full_result.stdout.strip()
+                session._cached_diff = diff_full
 
                 if not diff_full:
                     _sp.run(
@@ -729,6 +841,7 @@ async def continue_edit_session(
     mode: str = "",
     preview_manager=None,
     session_store: SessionStore | None = None,
+    tool_registry=None,
 ):
     """Continue an existing session with a new request."""
     session.request = new_request
@@ -756,4 +869,5 @@ async def continue_edit_session(
         continue_msg=new_request,
         preview_manager=preview_manager,
         session_store=session_store,
+        tool_registry=tool_registry,
     )
