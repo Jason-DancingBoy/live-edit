@@ -671,3 +671,34 @@ class TestSessionMemoryEngineIntegration:
         )
         # Should complete without errors
         assert True
+
+    @pytest.mark.asyncio
+    async def test_missing_rag_dependency_logs_warning(self):
+        """When rag dep is missing, engine should warn but not crash."""
+        from live_edit.engine import run_edit_session, EditSession
+        from live_edit.config import Config
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        config = Config()
+        config.session_memory.enabled = True
+
+        session = EditSession("test-s2", "Make it red")
+        mock_provider = AsyncMock()
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = "/tmp/test-s2"
+        mock_vcs.commit_in_worktree.return_value = "fakehash"
+        mock_storage = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry.get_tools.return_value = []
+
+        mock_provider.call_with_tools.return_value = [
+            {"type": "text", "text": "Done."},
+        ]
+
+        with patch("live_edit.embedder.LocalEmbedder", side_effect=ImportError("No module")):
+            await run_edit_session(
+                session=session, provider=mock_provider, vcs=mock_vcs,
+                storage=mock_storage, config=config, mode="deep",
+                tool_registry=mock_registry,
+            )
+        # Should complete without raising

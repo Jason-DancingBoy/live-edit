@@ -412,19 +412,9 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         session._worktree_path = ""  # prevent finally block from removing worktree
         session._commit_hash = wt_hash
 
-        # ── Store session embedding for future retrieval ──
-        if config and hasattr(config, 'session_memory') and config.session_memory.enabled:
+        sm = getattr(session, '_session_memory', None)
+        if sm is not None:
             try:
-                from .session_memory import SessionMemory
-                from .embedder import LocalEmbedder
-                sm_embedder = LocalEmbedder(
-                    model_name=config.session_memory.embedder.model
-                )
-                sm = SessionMemory(
-                    storage=storage,
-                    embedder=sm_embedder,
-                    config=config.session_memory,
-                )
                 await sm.store(
                     session_id=session.id,
                     request=session.request,
@@ -519,6 +509,37 @@ async def run_edit_session(
             session._preview_url = preview_url
             session.emit("preview_ready", url=f"{preview_url}/app")
 
+    # ── Session memory setup (validated once at startup) ──
+    from .session_memory import SessionMemory
+    from .embedder import LocalEmbedder
+
+    session_memory = None
+    if hasattr(config, 'session_memory') and config.session_memory.enabled:
+        try:
+            sm_embedder = LocalEmbedder(
+                model_name=config.session_memory.embedder.model
+            )
+            # Validate embedding works before using in session
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sm_embedder.embed, "test")
+            session_memory = SessionMemory(
+                storage=storage,
+                embedder=sm_embedder,
+                config=config.session_memory,
+            )
+        except ImportError:
+            logger.warning(
+                "session_memory.enabled=true but sentence-transformers is not "
+                "installed. Install with: pip install live-edit[rag]"
+            )
+        except Exception as e:
+            logger.warning(
+                "Session memory disabled: embedding model failed to load: %s", e
+            )
+
+    # Store on session so _do_commit can use it
+    session._session_memory = session_memory
+
     if continue_msg and session.messages:
         messages = session.messages
         if messages and isinstance(messages[0].get("content"), str):
@@ -530,20 +551,9 @@ async def run_edit_session(
         messages.append({"role": "user", "content": continue_msg})
 
         # ── Retrieve session memory for continuation ──
-        if hasattr(config, 'session_memory') and config.session_memory.enabled:
+        if session_memory is not None:
             try:
-                from .session_memory import SessionMemory
-                from .embedder import LocalEmbedder
-
-                sm_embedder = LocalEmbedder(
-                    model_name=config.session_memory.embedder.model
-                )
-                sm = SessionMemory(
-                    storage=storage,
-                    embedder=sm_embedder,
-                    config=config.session_memory,
-                )
-                memories = await sm.retrieve(continue_msg)
+                memories = await session_memory.retrieve(continue_msg)
                 if memories:
                     memory_context = _format_memory_context(
                         memories, config.session_memory.memory_prompt_template
@@ -558,20 +568,8 @@ async def run_edit_session(
         ]
 
         # ── Retrieve session memory for context ──
-        if (hasattr(config, 'session_memory') and config.session_memory.enabled
-                and not continue_msg):
+        if session_memory is not None and not continue_msg:
             try:
-                from .session_memory import SessionMemory
-                from .embedder import LocalEmbedder
-
-                sm_embedder = LocalEmbedder(
-                    model_name=config.session_memory.embedder.model
-                )
-                session_memory = SessionMemory(
-                    storage=storage,
-                    embedder=sm_embedder,
-                    config=config.session_memory,
-                )
                 memories = await session_memory.retrieve(session.request)
                 if memories:
                     memory_context = _format_memory_context(
