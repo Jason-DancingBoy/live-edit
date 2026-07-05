@@ -90,6 +90,24 @@ class EvaluationConfig:
 
 
 @dataclass
+class EmbedderConfig:
+    type: str = "local"
+    model: str = "all-MiniLM-L6-v2"
+    api_url: str = ""
+    api_key_env: str = ""
+
+
+@dataclass
+class SessionMemoryConfig:
+    enabled: bool = False
+    max_entries: int = 10
+    similarity_threshold: float = 0.6
+    max_stored_entries: int = 5000
+    memory_prompt_template: str = ""
+    embedder: EmbedderConfig = field(default_factory=EmbedderConfig)
+
+
+@dataclass
 class UIConfig:
     default_mode: str = "quick"
 
@@ -122,6 +140,7 @@ class Config:
     errors: ErrorTranslations = field(default_factory=ErrorTranslations)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     toml_tools: list[dict] = field(default_factory=list)
 
 
@@ -238,6 +257,23 @@ def parse_config(path: str) -> Config:
         preview_pages=eval_data.get("preview_pages", ["/"]),
     )
 
+    sm_data = raw.get("session_memory", {})
+    sm_embedder_data = sm_data.get("embedder", {})
+    sm_embedder = EmbedderConfig(
+        type=sm_embedder_data.get("type", "local"),
+        model=sm_embedder_data.get("model", "all-MiniLM-L6-v2"),
+        api_url=sm_embedder_data.get("api_url", ""),
+        api_key_env=sm_embedder_data.get("api_key_env", ""),
+    )
+    session_memory = SessionMemoryConfig(
+        enabled=sm_data.get("enabled", False),
+        max_entries=sm_data.get("max_entries", 10),
+        similarity_threshold=sm_data.get("similarity_threshold", 0.6),
+        max_stored_entries=sm_data.get("max_stored_entries", 5000),
+        memory_prompt_template=sm_data.get("memory_prompt_template", ""),
+        embedder=sm_embedder,
+    )
+
     toml_tools = raw.get("tools", [])
 
     return Config(
@@ -252,6 +288,7 @@ def parse_config(path: str) -> Config:
         errors=errors,
         preview=preview,
         evaluation=evaluation,
+        session_memory=session_memory,
         toml_tools=toml_tools,
     )
 
