@@ -26,6 +26,19 @@ class Storage(ABC):
     def get_session_detail(self, session_id: str) -> dict | None:
         ...
 
+    @abstractmethod
+    def store_embedding(self, session_id: str, request: str,
+                        files_json: str, embedding: bytes) -> None:
+        """Store a session embedding for later retrieval."""
+
+    @abstractmethod
+    def query_embeddings(self) -> list[tuple[str, str, str, bytes]]:
+        """Return all stored embeddings as (session_id, request, files_json, embedding_blob)."""
+
+    @abstractmethod
+    def delete_old_embeddings(self, keep_count: int) -> None:
+        """Delete oldest embeddings, keeping at most `keep_count` most recent rows."""
+
 
 class SQLiteStorage(Storage):
     """Default: SQLite-based session storage."""
@@ -53,6 +66,16 @@ class SQLiteStorage(Storage):
                 commit_hash TEXT DEFAULT '',
                 messages TEXT DEFAULT '[]',
                 mode TEXT DEFAULT 'quick',
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                request TEXT NOT NULL,
+                files_json TEXT NOT NULL DEFAULT '[]',
+                embedding BLOB NOT NULL,
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
@@ -117,3 +140,35 @@ class SQLiteStorage(Storage):
         detail = dict(row)
         self._parse_json_fields(detail)
         return detail
+
+    def store_embedding(self, session_id: str, request: str,
+                        files_json: str, embedding: bytes) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO session_embeddings
+               (session_id, request, files_json, embedding, created_at)
+               VALUES (?, ?, ?, ?, datetime('now'))""",
+            (session_id, request, files_json, embedding),
+        )
+        conn.commit()
+
+    def query_embeddings(self) -> list[tuple[str, str, str, bytes]]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT session_id, request, files_json, embedding
+               FROM session_embeddings
+               ORDER BY created_at DESC"""
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+    def delete_old_embeddings(self, keep_count: int) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """DELETE FROM session_embeddings
+               WHERE id NOT IN (
+                   SELECT id FROM session_embeddings
+                   ORDER BY created_at DESC LIMIT ?
+               )""",
+            (keep_count,),
+        )
+        conn.commit()
