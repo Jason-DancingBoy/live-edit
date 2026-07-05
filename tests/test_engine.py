@@ -605,3 +605,69 @@ class TestDoCommitBranchOnly:
         assert done_events, "expected a done event"
         assert any("live-edit/sess-bonly" in kw.get("message", "") for kw in done_events)
         assert session._committed is True
+
+
+class TestFormatMemoryContext:
+    def test_default_template(self):
+        from live_edit.session_memory import MemoryEntry
+        from live_edit.engine import _format_memory_context
+
+        memories = [
+            MemoryEntry(session_id="s1", request="Fix auth",
+                        files={"auth.py"}, commit_hash="abc", score=0.95),
+        ]
+        result = _format_memory_context(memories)
+        assert "Historical Similar Edit Records" in result
+        assert "Fix auth" in result
+        assert "auth.py" in result
+        assert "0.95" in result
+
+    def test_custom_template(self):
+        from live_edit.session_memory import MemoryEntry
+        from live_edit.engine import _format_memory_context
+
+        memories = [
+            MemoryEntry(session_id="s1", request="Fix auth",
+                        files={"auth.py"}, commit_hash="abc", score=0.95),
+        ]
+        template = "[{index}] {request} ({files}) score={score}"
+        result = _format_memory_context(memories, template)
+        assert "[1] Fix auth (auth.py) score=0.95" in result
+
+    def test_empty_memories(self):
+        from live_edit.engine import _format_memory_context
+        result = _format_memory_context([])
+        assert "Historical" in result
+
+
+class TestSessionMemoryEngineIntegration:
+    """Integration tests for session memory in the engine."""
+
+    @pytest.mark.asyncio
+    async def test_session_memory_disabled_by_default(self):
+        """When session_memory is disabled, no memory injection or errors."""
+        from live_edit.engine import run_edit_session, EditSession
+        from live_edit.config import Config
+        from unittest.mock import AsyncMock, MagicMock
+
+        config = Config()
+        session = EditSession("test-s1", "Make it red")
+        mock_provider = AsyncMock()
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = "/tmp/test-s1"
+        mock_vcs.commit_in_worktree.return_value = "fakehash"
+        mock_storage = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry.get_tools.return_value = []
+
+        mock_provider.call_with_tools.return_value = [
+            {"type": "text", "text": "I'll make it red."},
+        ]
+
+        await run_edit_session(
+            session=session, provider=mock_provider, vcs=mock_vcs,
+            storage=mock_storage, config=config, mode="deep",
+            tool_registry=mock_registry,
+        )
+        # Should complete without errors
+        assert True

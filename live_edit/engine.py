@@ -411,6 +411,28 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         session._merged = True  # prevent finally block from deleting the branch
         session._worktree_path = ""  # prevent finally block from removing worktree
         session._commit_hash = wt_hash
+
+        # ── Store session embedding for future retrieval ──
+        if config and hasattr(config, 'session_memory') and config.session_memory.enabled:
+            try:
+                from .session_memory import SessionMemory
+                from .embedder import LocalEmbedder
+                sm_embedder = LocalEmbedder(
+                    model_name=config.session_memory.embedder.model
+                )
+                sm = SessionMemory(
+                    storage=storage,
+                    embedder=sm_embedder,
+                    config=config.session_memory,
+                )
+                await sm.store(
+                    session_id=session.id,
+                    request=session.request,
+                    files=session._modified_files,
+                )
+            except Exception as e:
+                logger.warning("Failed to store session memory: %s", e)
+
         session._committed = True
         preview_note = ""
         if session._preview_url:
@@ -423,6 +445,45 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
     except Exception as e:
         logger.error("Commit error: %s", e)
         session.emit("error", error=f"提交失败: {e}")
+
+
+def _format_memory_context(memories: list, template: str = "") -> str:
+    """Format retrieved MemoryEntry list into a system-prompt-ready string."""
+    if template:
+        try:
+            items = []
+            for i, m in enumerate(memories, 1):
+                files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
+                items.append(
+                    template
+                    .replace("{index}", str(i))
+                    .replace("{request}", m.request)
+                    .replace("{files}", files_str)
+                    .replace("{commit_hash}", m.commit_hash)
+                    .replace("{score}", f"{m.score:.2f}")
+                )
+            return "\n".join(items)
+        except Exception:
+            pass
+
+    lines = [
+        "## Historical Similar Edit Records",
+        "",
+        "The following are past requests similar to the current one. Reference them",
+        "for patterns and solutions, but adapt to the specific current request.",
+        "",
+    ]
+    for i, m in enumerate(memories, 1):
+        files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
+        lines.append(f'{i}. Request: "{m.request}"')
+        lines.append(f"   Files modified: {files_str}")
+        if m.commit_hash:
+            lines.append(f"   Commit: {m.commit_hash}")
+        lines.append(f"   Similarity: {m.score:.2f}")
+        lines.append("")
+
+    lines.append("Use the above as reference only — do not blindly copy past solutions.")
+    return "\n".join(lines)
 
 
 async def run_edit_session(
@@ -467,11 +528,59 @@ async def run_edit_session(
         # crashed/cancelled session (safety net for old persisted data).
         _repair_messages(messages)
         messages.append({"role": "user", "content": continue_msg})
+
+        # ── Retrieve session memory for continuation ──
+        if hasattr(config, 'session_memory') and config.session_memory.enabled:
+            try:
+                from .session_memory import SessionMemory
+                from .embedder import LocalEmbedder
+
+                sm_embedder = LocalEmbedder(
+                    model_name=config.session_memory.embedder.model
+                )
+                sm = SessionMemory(
+                    storage=storage,
+                    embedder=sm_embedder,
+                    config=config.session_memory,
+                )
+                memories = await sm.retrieve(continue_msg)
+                if memories:
+                    memory_context = _format_memory_context(
+                        memories, config.session_memory.memory_prompt_template
+                    )
+                    messages.append({"role": "user", "content": memory_context})
+            except Exception as e:
+                logger.warning("Failed to retrieve session memory for continuation: %s", e)
     else:
         messages = [
             {"role": "user", "content": system_prompt},
             {"role": "user", "content": session.request},
         ]
+
+        # ── Retrieve session memory for context ──
+        if (hasattr(config, 'session_memory') and config.session_memory.enabled
+                and not continue_msg):
+            try:
+                from .session_memory import SessionMemory
+                from .embedder import LocalEmbedder
+
+                sm_embedder = LocalEmbedder(
+                    model_name=config.session_memory.embedder.model
+                )
+                session_memory = SessionMemory(
+                    storage=storage,
+                    embedder=sm_embedder,
+                    config=config.session_memory,
+                )
+                memories = await session_memory.retrieve(session.request)
+                if memories:
+                    memory_context = _format_memory_context(
+                        memories, config.session_memory.memory_prompt_template
+                    )
+                    system_prompt += "\n\n" + memory_context
+                    messages[0]["content"] = system_prompt
+            except Exception as e:
+                logger.warning("Failed to retrieve session memory: %s", e)
 
     # Let the AI know about the preview URL so it can tell the user
     if session._preview_url and not getattr(session, '_preview_announced', False):
