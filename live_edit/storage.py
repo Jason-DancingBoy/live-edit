@@ -79,6 +79,27 @@ class SQLiteStorage(Storage):
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                commit_hash TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL CHECK(chunk_type IN ('request', 'file_diff')),
+                chunk_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                file_path TEXT DEFAULT '',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_session
+            ON session_chunks(session_id)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_type
+            ON session_chunks(chunk_type)
+        """)
         conn.commit()
 
     def save_session(
@@ -171,4 +192,97 @@ class SQLiteStorage(Storage):
                )""",
             (keep_count,),
         )
+        conn.commit()
+
+    def store_chunks(self, session_id: str, commit_hash: str,
+                     chunks: list[dict]) -> None:
+        """Transactionally replace all chunks for a session.
+
+        Each chunk dict: {'chunk_type', 'chunk_text', 'payload_json',
+                          'file_path', 'embedding_bytes'}
+
+        Runs DELETE old chunks + INSERT new chunks + eviction check
+        in a single BEGIN IMMEDIATE / COMMIT for atomicity.
+        """
+        conn = self._get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "DELETE FROM session_chunks WHERE session_id = ?",
+                (session_id,),
+            )
+            for c in chunks:
+                conn.execute(
+                    """INSERT INTO session_chunks
+                       (session_id, commit_hash, chunk_type, chunk_text,
+                        payload_json, file_path, embedding)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id, commit_hash,
+                        c["chunk_type"], c["chunk_text"],
+                        c["payload_json"], c.get("file_path", ""),
+                        c["embedding_bytes"],
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def query_chunks(self, limit: int = 15000) -> list[tuple]:
+        """Return chunks ordered by recency, capped at `limit` rows.
+
+        Returns: list of (id, session_id, commit_hash, chunk_type,
+                 chunk_text, payload_json, file_path, embedding)
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT id, session_id, commit_hash, chunk_type,
+                      chunk_text, payload_json, file_path, embedding
+               FROM session_chunks
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [tuple(r) for r in rows]
+
+    def delete_session_chunks(self, session_id: str) -> None:
+        """Delete all chunks for a session. Called before re-store on continuation."""
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM session_chunks WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.commit()
+
+    def delete_old_sessions(self, keep_count: int) -> None:
+        """Delete all chunks belonging to the oldest sessions.
+
+        Keeps at most `keep_count` most recent sessions (by first chunk time).
+        Deletes all chunks for sessions beyond that threshold.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            """DELETE FROM session_chunks
+               WHERE session_id IN (
+                   SELECT session_id FROM (
+                       SELECT DISTINCT session_id,
+                              MIN(created_at) AS first_seen
+                       FROM session_chunks
+                       GROUP BY session_id
+                       ORDER BY first_seen DESC
+                       LIMIT -1 OFFSET ?
+                   )
+               )""",
+            (keep_count,),
+        )
+        conn.commit()
+
+    def get_db_version(self) -> int:
+        conn = self._get_conn()
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def set_db_version(self, version: int) -> None:
+        conn = self._get_conn()
+        conn.execute(f"PRAGMA user_version = {int(version)}")
         conn.commit()
