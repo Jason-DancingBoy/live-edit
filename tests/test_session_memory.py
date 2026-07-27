@@ -261,3 +261,130 @@ Binary files a/img.png and b/img.png differ
         asyncio.run(run())
         assert len(storage._chunks) == 1
         assert storage._chunks[0]["chunk_type"] == "request"
+
+
+class TestMigration:
+    """Tests for _migrate_if_needed idempotent migration."""
+
+    @pytest.fixture
+    def real_sqlite_storage(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "test_migrate.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                request TEXT NOT NULL,
+                files_json TEXT NOT NULL DEFAULT '[]',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                commit_hash TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                file_path TEXT DEFAULT '',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.commit()
+
+        # Insert v1 data
+        emb = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+        conn.execute(
+            "INSERT INTO session_embeddings (session_id, request, files_json, embedding) "
+            "VALUES (?, ?, ?, ?)",
+            ("old-s1", "add feature X", '["a.py"]', emb),
+        )
+        conn.commit()
+        conn.close()
+
+        from live_edit.storage import SQLiteStorage
+        return SQLiteStorage(db_path)
+
+    def test_migration_copies_old_data(self, real_sqlite_storage):
+        from live_edit.embedder import LocalEmbedder
+        storage = real_sqlite_storage
+        assert storage.get_db_version() == 0
+
+        # Create SessionMemory with a fake embedder; migration runs in __init__
+        sm = SessionMemory(
+            storage=storage,
+            embedder=FakeEmbedder(dim=4),
+            config=SessionMemoryConfig(enabled=True),
+        )
+
+        rows = storage.query_chunks()
+        assert len(rows) >= 1
+        # Verify it's a request chunk with migrated=True
+        payload = json.loads(rows[0][5])  # payload_json at index 5
+        assert payload.get("migrated") is True
+        assert payload.get("request") == "add feature X"
+
+    def test_migration_sets_version(self, real_sqlite_storage):
+        storage = real_sqlite_storage
+        assert storage.get_db_version() == 0
+        SessionMemory(
+            storage=storage,
+            embedder=FakeEmbedder(dim=4),
+            config=SessionMemoryConfig(enabled=True),
+        )
+        assert storage.get_db_version() == 1
+
+    def test_migration_idempotent(self, real_sqlite_storage):
+        storage = real_sqlite_storage
+        SessionMemory(
+            storage=storage,
+            embedder=FakeEmbedder(dim=4),
+            config=SessionMemoryConfig(enabled=True),
+        )
+        count1 = len(storage.query_chunks())
+
+        # Second init should not duplicate
+        SessionMemory(
+            storage=storage,
+            embedder=FakeEmbedder(dim=4),
+            config=SessionMemoryConfig(enabled=True),
+        )
+        count2 = len(storage.query_chunks())
+        assert count2 == count1
+
+    def test_migration_skips_when_no_old_table(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "test_fresh.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                commit_hash TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                file_path TEXT DEFAULT '',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        from live_edit.storage import SQLiteStorage
+        storage = SQLiteStorage(db_path)
+        assert storage.get_db_version() == 0
+
+        SessionMemory(
+            storage=storage,
+            embedder=FakeEmbedder(dim=4),
+            config=SessionMemoryConfig(enabled=True),
+        )
+        # Should set version without errors
+        assert storage.get_db_version() == 1
+        assert storage.query_chunks() == []

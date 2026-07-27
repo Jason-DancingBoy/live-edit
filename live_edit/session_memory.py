@@ -31,6 +31,78 @@ class SessionMemory:
         self._storage = storage
         self._embedder = embedder
         self.config = config
+        self._migrate_if_needed()
+
+    def _migrate_if_needed(self) -> None:
+        """Idempotently migrate v1 session_embeddings to session_chunks.
+
+        Uses PRAGMA user_version as migration gate:
+          0 = not migrated (or fresh DB), 1 = migration complete.
+
+        INSERT OR IGNORE with a temp unique index on (session_id, chunk_type)
+        guarantees crash-safe re-runs.
+        """
+        try:
+            conn = self._storage._get_conn()
+        except AttributeError:
+            return  # FakeStorage in tests -- skip
+
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 1:
+            return
+
+        # Check old table exists
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='session_embeddings'"
+        ).fetchone()
+        if not exists:
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+            return
+
+        logger.info("Migrating v1 session_embeddings to session_chunks...")
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_migration "
+                "ON session_chunks(session_id, chunk_type)"
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO session_chunks
+                   (session_id, chunk_type, chunk_text, payload_json,
+                    embedding, created_at)
+                   SELECT
+                       session_id,
+                       'request',
+                       request,
+                       json_object(
+                           'request', request,
+                           'files', files_json,
+                           'migrated', json('true')
+                       ),
+                       embedding,
+                       created_at
+                   FROM session_embeddings"""
+            )
+            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM session_chunks"
+            ).fetchone()[0]
+            logger.info(
+                "Migration complete: %d chunks in session_chunks", count
+            )
+        except Exception:
+            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+            conn.rollback()
+            logger.warning(
+                "Migration from session_embeddings failed; "
+                "session memory will start with empty chunks",
+                exc_info=True,
+            )
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
 
     # --- Public API ---
 
