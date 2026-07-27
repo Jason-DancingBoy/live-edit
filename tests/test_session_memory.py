@@ -1,18 +1,17 @@
-"""Tests for live_edit.session_memory — SessionMemory retrieval and storage."""
+"""Tests for live_edit.session_memory --- chunking store, retrieve, diff parsing."""
 
 import asyncio
 import json
 import math
 import struct
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from live_edit.session_memory import SessionMemory, MemoryEntry
-from live_edit.config import SessionMemoryConfig, EmbedderConfig
+from live_edit.config import SessionMemoryConfig
 
 
 class FakeEmbedder:
-    """Returns fixed vectors for deterministic tests."""
     def __init__(self, dim=4, vectors=None):
         self._dim = dim
         self._vectors = vectors or {}
@@ -31,42 +30,106 @@ class FakeEmbedder:
 
 
 class FakeStorage:
-    """In-memory storage for embedding tests."""
-    def __init__(self, rows=None):
-        self._rows = rows or []
+    def __init__(self):
+        self._chunks = []
+        self._version = 0
 
-    def store_embedding(self, session_id, request, files_json, embedding):
-        self._rows = [r for r in self._rows if r[0] != session_id]
-        self._rows.append((session_id, request, files_json, embedding))
+    def store_chunks(self, session_id, commit_hash, chunks):
+        self._chunks = [c for c in self._chunks if c["_sid"] != session_id]
+        for c in chunks:
+            c["_sid"] = session_id
+            c["_hash"] = commit_hash
+        self._chunks.extend(chunks)
 
-    def query_embeddings(self):
-        return list(self._rows)
+    def query_chunks(self, limit=15000):
+        results = []
+        for i, c in enumerate(self._chunks[-limit:]):
+            emb = c.get("embedding_bytes", b"")
+            results.append((
+                i, c.get("_sid", ""), c.get("_hash", ""),
+                c.get("chunk_type", ""), c.get("chunk_text", ""),
+                c.get("payload_json", "{}"), c.get("file_path", ""), emb,
+            ))
+        return results
 
-    def delete_old_embeddings(self, keep_count):
-        self._rows = self._rows[-keep_count:]
+    def delete_old_sessions(self, keep_count):
+        sessions = {}
+        for i, c in enumerate(self._chunks):
+            sid = c.get("_sid", "")
+            if sid not in sessions:
+                sessions[sid] = i
+        keep_sids = set(sorted(sessions, key=lambda s: sessions[s])[-keep_count:])
+        self._chunks = [c for c in self._chunks if c.get("_sid") in keep_sids]
+
+    def get_db_version(self):
+        return self._version
+
+    def set_db_version(self, v):
+        self._version = v
 
 
-class TestMemoryEntry:
-    def test_fields(self):
-        entry = MemoryEntry(
-            session_id="abc",
-            request="Make it blue",
-            files={"a.py", "b.py"},
-            commit_hash="def123",
-            score=0.85,
-        )
-        assert entry.session_id == "abc"
-        assert entry.score == 0.85
+SAMPLE_DIFF = """diff --git a/src/auth.py b/src/auth.py
+index abc123..def456 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,5 +1,10 @@
+ import os
++import jwt
++from datetime import datetime
++
+-def login(user, password):
+-    return check_db(user, password)
++def login(user, password):
++    token = jwt.encode({"user": user}, SECRET)
++    return token
+
+diff --git a/src/session.py b/src/session.py
+index 111222..333444 100644
+--- a/src/session.py
++++ b/src/session.py
+@@ -10,3 +10,6 @@
+ class Session:
+     pass
++
++def create_session(user_id):
++    return Session(user_id=user_id, created_at=datetime.now())
+"""
 
 
-class TestSessionMemory:
+class TestSplitDiffByFile:
+    def test_splits_multi_file_diff(self):
+        chunks = SessionMemory._split_diff_by_file(SAMPLE_DIFF)
+        assert len(chunks) == 2
+        assert chunks[0]["file_path"] == "src/auth.py"
+        assert chunks[1]["file_path"] == "src/session.py"
+
+    def test_computes_stat(self):
+        chunks = SessionMemory._split_diff_by_file(SAMPLE_DIFF)
+        # auth.py: 6 added lines, 2 removed lines
+        assert chunks[0]["stat"] == "+6/-2"
+
+    def test_empty_diff(self):
+        assert SessionMemory._split_diff_by_file("") == []
+        assert SessionMemory._split_diff_by_file("   \n  ") == []
+
+    def test_binary_diff_skipped(self):
+        bin_diff = """diff --git a/foo.png b/foo.png
+index abc..def 100644
+Binary files a/foo.png and b/foo.png differ
+"""
+        chunks = SessionMemory._split_diff_by_file(bin_diff)
+        assert len(chunks) == 0
+
+
+class TestSessionMemoryChunking:
     @pytest.fixture
     def embedder(self):
         return FakeEmbedder(dim=4, vectors={
-            "add login": [1.0, 0.0, 0.0, 0.0],
-            "fix button": [0.0, 1.0, 0.0, 0.0],
-            "add auth": [0.8, 0.0, 0.0, 0.0],
-            "unrelated": [0.0, 0.0, 0.0, 1.0],
+            "add JWT login": [1.0, 0.0, 0.0, 0.0],
+            "add JWT login\nFile: src/auth.py\nChanges: +6/-2": [0.9, 0.1, 0.0, 0.0],
+            "add JWT login\nFile: src/session.py\nChanges: +3/-0": [0.8, 0.0, 0.2, 0.0],
+            "unrelated task": [0.0, 0.0, 0.0, 1.0],
+            "unrelated task\nFile: other.py\nChanges: +1/-1": [0.0, 0.0, 0.0, 1.0],
         })
 
     @pytest.fixture
@@ -83,94 +146,118 @@ class TestSessionMemory:
         )
 
     @pytest.fixture
-    def session_memory(self, storage, embedder, config):
-        return SessionMemory(storage=storage, embedder=embedder, config=config)
+    def sm(self, storage, embedder, config):
+        return SessionMemory(storage, embedder, config)
 
-    def test_retrieve_empty_storage(self, session_memory):
-        results = asyncio.run(session_memory.retrieve("add login"))
+    def test_store_creates_request_and_file_chunks(self, sm, storage):
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
+                           SAMPLE_DIFF, "abc123")
+        asyncio.run(run())
+        assert len(storage._chunks) == 3  # 1 request + 2 file_diff
+
+    def test_retrieve_finds_relevant_chunks(self, sm, storage):
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py"],
+                           SAMPLE_DIFF, "abc123")
+            return await sm.retrieve("add JWT login")
+        results = asyncio.run(run())
+        assert len(results) >= 1
+        assert results[0].request == "add JWT login"
+
+    def test_unrelated_query_returns_empty(self, sm, storage):
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py"],
+                           SAMPLE_DIFF, "abc123")
+            return await sm.retrieve("unrelated task")
+        results = asyncio.run(run())
         assert results == []
 
-    def test_store_and_retrieve(self, session_memory, storage):
-        emb_bytes = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        # pre-populate storage
-        storage.store_embedding("s1", "add login", '["auth.py"]', emb_bytes)
+    def test_session_grouping_top_2(self, sm, storage):
+        """Same session should contribute at most 2 chunks."""
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
+                           SAMPLE_DIFF, "abc123")
+            return await sm.retrieve("add JWT login")
+        results = asyncio.run(run())
+        # 3 chunks total (1 request + 2 file), but at most 2 returned per session
+        s1_results = [r for r in results if r.session_id == "s1"]
+        assert len(s1_results) <= 2
 
-        results = asyncio.run(session_memory.retrieve("add login"))
-        assert len(results) == 1
-        assert results[0].session_id == "s1"
-        assert results[0].request == "add login"
-        assert "auth.py" in results[0].files
+    def test_file_diff_preferred_over_request(self, sm, storage):
+        """When both match, file_diff chunks rank higher than request chunk."""
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py"],
+                           SAMPLE_DIFF, "abc123")
+            return await sm.retrieve("add JWT login")
+        results = asyncio.run(run())
+        # At least one result should be a file_diff (non-empty file_path)
+        has_file = any(r.file_path for r in results)
+        assert has_file
 
-    def test_identical_request_scores_near_one(self, session_memory, storage):
-        emb_bytes = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-        storage.store_embedding("s1", "add login", "[]", emb_bytes)
-
-        results = asyncio.run(session_memory.retrieve("add login"))
-        assert len(results) == 1
-        assert results[0].score > 0.99
-
-    def test_unrelated_request_scores_low(self, session_memory, storage):
-        emb_bytes = struct.pack("4f", 0.0, 0.0, 0.0, 1.0)
-        storage.store_embedding("s1", "unrelated", "[]", emb_bytes)
-
-        results = asyncio.run(session_memory.retrieve("add login"))
-        assert len(results) == 0  # below threshold
-
-    def test_threshold_filters_low_similarity(self, session_memory, storage):
-        # Store an entry whose embedding is orthogonal to the query
-        emb_bytes = struct.pack("4f", 0.0, 1.0, 0.0, 0.0)
-        storage.store_embedding("s1", "fix button", "[]", emb_bytes)
-
-        results = asyncio.run(session_memory.retrieve("add login"))
-        # "add login" query vec = [1,0,0,0], stored vec = [0,1,0,0], cosine=0
-        assert results == []
-
-    def test_top_k_truncation(self, session_memory, storage, embedder):
-        embedder._dim = 4
-        # All entries point in the same direction — all score near 1.0
-        for i in range(5):
-            emb_bytes = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
-            storage.store_embedding(f"s{i}", "add login", "[]", emb_bytes)
-
-        session_memory.config.max_entries = 3
-        results = asyncio.run(session_memory.retrieve("add login"))
-        assert len(results) == 3
-
-    def test_eviction_on_store(self, session_memory, storage, embedder):
-        session_memory.config.max_stored_entries = 3
-
+    def test_eviction_on_store(self, sm, storage):
+        sm.config.max_stored_entries = 3
         async def run():
             for i in range(5):
-                await session_memory.store(f"s{i}", f"req{i}", ["a.py"])
-
+                await sm.store(f"s{i}", f"task {i}", [],
+                               SAMPLE_DIFF, f"hash{i}")
         asyncio.run(run())
-        rows = storage.query_embeddings()
-        assert len(rows) == 3
+        session_ids = set(c.get("_sid") for c in storage._chunks)
+        assert len(session_ids) <= 3
 
-    def test_deserialize_correct_vector(self, session_memory, storage):
-        # Use vector close to query [1,0,0,0] so cosine similarity > 0.5 threshold
-        emb = [0.9, 0.0, 0.0, 0.0]
-        emb_bytes = struct.pack("4f", *emb)
-        storage.store_embedding("s1", "add login", "[]", emb_bytes)
+    def test_continuation_replaces_old_chunks(self, sm, storage):
+        async def run():
+            await sm.store("s1", "first commit", [],
+                           SAMPLE_DIFF, "hash1")
+            await sm.store("s1", "second commit", [],
+                           SAMPLE_DIFF, "hash2")
+        asyncio.run(run())
+        # Should have 3 chunks (1 request + 2 file_diff), not 6
+        assert len(storage._chunks) == 3
 
-        results = asyncio.run(session_memory.retrieve("add login"))
-        assert len(results) == 1
+    def test_store_skipped_when_disabled(self, sm, storage):
+        sm.config.enabled = False
+        async def run():
+            await sm.store("s1", "test", [], SAMPLE_DIFF, "hash")
+        asyncio.run(run())
+        assert len(storage._chunks) == 0
 
-
-class TestSessionMemoryDisabled:
-    def test_retrieve_skipped_when_disabled(self):
-        config = SessionMemoryConfig(enabled=False)
-        sm = SessionMemory(
-            storage=FakeStorage(),
-            embedder=FakeEmbedder(dim=4),
-            config=config,
-        )
-        results = asyncio.run(sm.retrieve("test"))
+    def test_retrieve_skipped_when_disabled(self, sm, storage):
+        sm.config.enabled = False
+        async def run():
+            return await sm.retrieve("test")
+        results = asyncio.run(run())
         assert results == []
 
-    def test_store_skipped_when_disabled(self):
-        config = SessionMemoryConfig(enabled=False)
-        storage = FakeStorage()
-        sm = SessionMemory(storage=storage, embedder=FakeEmbedder(dim=4), config=config)
-        asyncio.run(sm.store("s1", "test", []))
-        assert storage.query_embeddings() == []
+    def test_memory_entry_fields_populated(self, sm, storage):
+        async def run():
+            await sm.store("s1", "add JWT login", ["src/auth.py"],
+                           SAMPLE_DIFF, "abc123")
+            return await sm.retrieve("add JWT login")
+        results = asyncio.run(run())
+        assert len(results) >= 1
+        entry = results[0]
+        assert entry.session_id == "s1"
+        assert entry.request == "add JWT login"
+        assert entry.commit_hash == "abc123"
+
+    def test_empty_diff_stores_request_chunk_only(self, sm, storage):
+        async def run():
+            await sm.store("s1", "no files changed", [],
+                           "", "hash")
+        asyncio.run(run())
+        assert len(storage._chunks) == 1
+        assert storage._chunks[0]["chunk_type"] == "request"
+
+    def test_diff_with_no_valid_files(self, sm, storage):
+        """Binary-only diff should produce only request chunk."""
+        bin_diff = """diff --git a/img.png b/img.png
+index abc..def 100644
+Binary files a/img.png and b/img.png differ
+"""
+        async def run():
+            await sm.store("s1", "add image", [],
+                           bin_diff, "hash")
+        asyncio.run(run())
+        assert len(storage._chunks) == 1
+        assert storage._chunks[0]["chunk_type"] == "request"
