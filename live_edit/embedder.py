@@ -28,12 +28,12 @@ class Embedder(ABC):
 
 
 class LocalEmbedder(Embedder):
-    """Default embedder using sentence-transformers (all-MiniLM-L6-v2).
+    """Default embedder using sentence-transformers (thenlper/gte-small).
 
     Lazy-loads the model on first call. Thread-safe initialization.
     """
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "thenlper/gte-small"):
         self._model_name = model_name
         self._model = None
         self._dimension = 0

@@ -92,7 +92,7 @@ class EvaluationConfig:
 @dataclass
 class EmbedderConfig:
     type: str = "local"
-    model: str = "all-MiniLM-L6-v2"
+    model: str = "thenlper/gte-small"
     api_url: str = ""
     api_key_env: str = ""
 
@@ -261,7 +261,7 @@ def parse_config(path: str) -> Config:
     sm_embedder_data = sm_data.get("embedder", {})
     sm_embedder = EmbedderConfig(
         type=sm_embedder_data.get("type", "local"),
-        model=sm_embedder_data.get("model", "all-MiniLM-L6-v2"),
+        model=sm_embedder_data.get("model", "thenlper/gte-small"),
         api_url=sm_embedder_data.get("api_url", ""),
         api_key_env=sm_embedder_data.get("api_key_env", ""),
     )
