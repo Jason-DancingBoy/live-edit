@@ -98,7 +98,8 @@ class SessionMemory:
             conn.rollback()
             logger.warning(
                 "Migration from session_embeddings failed; "
-                "session memory will start with empty chunks",
+                "session memory will start with empty chunks. "
+                "To retry migration, run: PRAGMA user_version = 0",
                 exc_info=True,
             )
             conn.execute("PRAGMA user_version = 1")

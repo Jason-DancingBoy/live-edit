@@ -271,6 +271,8 @@ class SQLiteStorage(Storage):
                        FROM session_chunks
                        GROUP BY session_id
                        ORDER BY first_seen DESC
+                       -- SQLite: LIMIT -1 means "no limit", so this returns all rows
+                       -- starting from offset keep_count (i.e., the sessions to delete)
                        LIMIT -1 OFFSET ?
                    )
                )""",
