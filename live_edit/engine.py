@@ -419,6 +419,8 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
                     session_id=session.id,
                     request=session.request,
                     files=session._modified_files,
+                    diff=getattr(session, '_cached_diff', ''),
+                    commit_hash=session._commit_hash,
                 )
             except Exception as e:
                 logger.warning("Failed to store session memory: %s", e)
@@ -438,41 +440,45 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
 
 
 def _format_memory_context(memories: list, template: str = "") -> str:
-    """Format retrieved MemoryEntry list into a system-prompt-ready string."""
+    """Format retrieved MemoryEntry list into a compact system-prompt string.
+
+    Each entry shows request + file + diff_summary (~50-80 tokens vs ~200-300 in v1).
+    """
     if template:
         try:
             items = []
             for i, m in enumerate(memories, 1):
-                files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
                 items.append(
                     template
                     .replace("{index}", str(i))
                     .replace("{request}", m.request)
-                    .replace("{files}", files_str)
+                    .replace("{file}", m.file_path or "(request)")
+                    .replace("{diff_summary}", m.diff_summary or "")
+                    .replace("{stat}", m.stat or "")
                     .replace("{commit_hash}", m.commit_hash)
-                    .replace("{score}", f"{m.score:.2f}")
+                    .replace("{score}", f"{m.score:.0%}")
                 )
             return "\n".join(items)
         except Exception:
             pass
 
     lines = [
-        "## Historical Similar Edit Records",
+        "## Relevant Past Changes",
         "",
-        "The following are past requests similar to the current one. Reference them",
-        "for patterns and solutions, but adapt to the specific current request.",
+        "Similar past edits (reference only, adapt to current request):",
         "",
     ]
     for i, m in enumerate(memories, 1):
-        files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
-        lines.append(f'{i}. Request: "{m.request}"')
-        lines.append(f"   Files modified: {files_str}")
-        if m.commit_hash:
-            lines.append(f"   Commit: {m.commit_hash}")
-        lines.append(f"   Similarity: {m.score:.2f}")
+        file_info = f" -> {m.file_path}" if m.file_path else ""
+        lines.append(f'{i}. "{m.request}" ({m.score:.0%}){file_info}')
+        if m.diff_summary:
+            # Truncate each summary line to ~80 chars for compactness
+            summary_lines = m.diff_summary.strip().split("\n")[:3]
+            for sl in summary_lines:
+                lines.append(f"   {sl[:120]}")
         lines.append("")
 
-    lines.append("Use the above as reference only — do not blindly copy past solutions.")
+    lines.append("Use the above as reference only -- do not blindly copy past solutions.")
     return "\n".join(lines)
 
 

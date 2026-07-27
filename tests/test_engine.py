@@ -613,31 +613,54 @@ class TestFormatMemoryContext:
         from live_edit.engine import _format_memory_context
 
         memories = [
-            MemoryEntry(session_id="s1", request="Fix auth",
-                        files={"auth.py"}, commit_hash="abc", score=0.95),
+            MemoryEntry(
+                session_id="s1", request="Fix auth",
+                file_path="auth.py",
+                diff_summary="+import jwt\n+def login():",
+                stat="+3/-1", commit_hash="abc", score=0.95,
+            ),
         ]
         result = _format_memory_context(memories)
-        assert "Historical Similar Edit Records" in result
+        assert "Relevant Past Changes" in result
         assert "Fix auth" in result
         assert "auth.py" in result
-        assert "0.95" in result
+        assert "95%" in result
 
     def test_custom_template(self):
         from live_edit.session_memory import MemoryEntry
         from live_edit.engine import _format_memory_context
 
         memories = [
-            MemoryEntry(session_id="s1", request="Fix auth",
-                        files={"auth.py"}, commit_hash="abc", score=0.95),
+            MemoryEntry(
+                session_id="s1", request="Fix auth",
+                file_path="auth.py",
+                diff_summary="+import jwt",
+                stat="+3/-1", commit_hash="abc", score=0.95,
+            ),
         ]
-        template = "[{index}] {request} ({files}) score={score}"
+        template = "[{index}] {request} {file} {stat} {score}"
         result = _format_memory_context(memories, template)
-        assert "[1] Fix auth (auth.py) score=0.95" in result
+        assert "[1] Fix auth auth.py +3/-1 95%" in result
+
+    def test_empty_file_path_shows_request_only(self):
+        from live_edit.session_memory import MemoryEntry
+        from live_edit.engine import _format_memory_context
+
+        memories = [
+            MemoryEntry(
+                session_id="s1", request="Some query",
+                file_path="", diff_summary="", stat="",
+                commit_hash="", score=0.80,
+            ),
+        ]
+        result = _format_memory_context(memories)
+        assert "Some query" in result
 
     def test_empty_memories(self):
         from live_edit.engine import _format_memory_context
         result = _format_memory_context([])
-        assert "Historical" in result
+        assert "Relevant" in result
+        assert "Use the above" in result
 
 
 class TestSessionMemoryEngineIntegration:
