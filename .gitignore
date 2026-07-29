@@ -8,6 +8,10 @@ __pycache__/
 *.swo
 *~
 
+# Personal files (not part of the package)
+article-juejin.md
+docs/interview-prep.md
+
 # System files
 .DS_Store
 
