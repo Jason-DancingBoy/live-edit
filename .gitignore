@@ -15,6 +15,7 @@ __pycache__/
 live_edit.db
 live_edit.db-shm
 live_edit.db-wal
+live_edit_storage.db
 
 # Test artifacts
 MagicMock/
