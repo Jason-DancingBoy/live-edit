@@ -3,8 +3,9 @@
 import sys
 import threading
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy", reason="numpy required (install live-edit[rag])")
 from unittest.mock import MagicMock, patch
 
 from live_edit.embedder import Embedder, LocalEmbedder

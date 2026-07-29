@@ -3,7 +3,10 @@
 import json
 import os
 import re
-import tomli
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 from dataclasses import dataclass, field
 
 
@@ -193,7 +196,7 @@ def _parse_mode(config_data: dict) -> tuple[str, ModeConfig]:
 def parse_config(path: str) -> Config:
     """Parse a .live-edit.toml file into a Config object."""
     with open(path, "rb") as f:
-        raw = tomli.load(f)
+        raw = tomllib.load(f)
 
     project_data = raw.get("project", {})
     project = ProjectConfig(
@@ -339,7 +342,7 @@ def detect_project(root: str) -> dict:
         info["language"] = "python"
         with open(pyproject, "rb") as f:
             try:
-                data = tomli.load(f)
+                data = tomllib.load(f)
                 proj = data.get("project", {})
                 info["name"] = proj.get("name", info["name"])
                 deps = proj.get("dependencies", [])
