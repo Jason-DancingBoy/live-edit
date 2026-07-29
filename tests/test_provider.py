@@ -16,6 +16,7 @@ class TestAnthropicCompatibleProvider:
     def _setup_mock(self, events):
         """Build mock httpx client that returns SSE events."""
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.aiter_lines = MagicMock(
             return_value=_async_iter([f"data: {e}" for e in events])

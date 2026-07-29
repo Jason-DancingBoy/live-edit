@@ -246,6 +246,7 @@ class TestRunEditSession:
     async def test_tool_execution_read_file(self):
         """Session where the provider calls read_file."""
         import tempfile, os
+        from live_edit.tool_registry import DefaultToolRegistry
         tmp = tempfile.mkdtemp()
         fpath = os.path.join(tmp, "test.py")
         with open(fpath, "w") as f:
@@ -256,7 +257,11 @@ class TestRunEditSession:
               "input": {"path": "test.py"}}],
         ])
         mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tmp
         mock_storage = MagicMock()
+
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
 
         config = _make_test_config()
         config.project.root = tmp
@@ -268,7 +273,7 @@ class TestRunEditSession:
         await run_edit_session(
             session=session, provider=provider, vcs=mock_vcs,
             storage=mock_storage, config=config, mode="deep",
-            session_store=store,
+            session_store=store, tool_registry=registry,
         )
 
         events = _drain_queue(session)
@@ -280,6 +285,7 @@ class TestRunEditSession:
     async def test_tool_execution_edit_file(self):
         """Session where the provider edits a file (deep mode, auto-approve)."""
         import tempfile, os
+        from live_edit.tool_registry import DefaultToolRegistry
         tmp = tempfile.mkdtemp()
         fpath = os.path.join(tmp, "edit_me.py")
         with open(fpath, "w") as f:
@@ -291,8 +297,12 @@ class TestRunEditSession:
                         "new_string": "modified content"}}],
         ])
         mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tmp
         mock_vcs.commit.return_value = "abc123"
         mock_storage = MagicMock()
+
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
 
         config = _make_test_config()
         config.project.root = tmp
@@ -304,7 +314,7 @@ class TestRunEditSession:
         await run_edit_session(
             session=session, provider=provider, vcs=mock_vcs,
             storage=mock_storage, config=config, mode="deep",
-            session_store=store,
+            session_store=store, tool_registry=registry,
         )
 
         with open(fpath) as f:
@@ -314,6 +324,8 @@ class TestRunEditSession:
     async def test_tool_execution_write_file(self):
         """Session where the provider writes a new file."""
         import tempfile, os
+        from live_edit.tool_registry import DefaultToolRegistry
+
         tmp = tempfile.mkdtemp()
 
         provider = FakeProvider([
@@ -321,8 +333,12 @@ class TestRunEditSession:
               "input": {"path": "new_file.py", "content": "print('new')"}}],
         ])
         mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tmp
         mock_vcs.commit.return_value = "abc123"
         mock_storage = MagicMock()
+
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
 
         config = _make_test_config()
         config.project.root = tmp
@@ -334,7 +350,7 @@ class TestRunEditSession:
         await run_edit_session(
             session=session, provider=provider, vcs=mock_vcs,
             storage=mock_storage, config=config, mode="deep",
-            session_store=store,
+            session_store=store, tool_registry=registry,
         )
 
         assert os.path.exists(os.path.join(tmp, "new_file.py"))
@@ -544,6 +560,7 @@ class _FakeSession:
         self._done = False
         self._mode = "quick"
         self._created_at = 0
+        self._preview_url = ""
         self.emitted = []
         self.messages = []
 

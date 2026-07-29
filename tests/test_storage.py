@@ -58,8 +58,8 @@ class TestSQLiteStorage:
         assert detail is not None
         assert detail["session_id"] == "detail1"
         assert detail["mode"] == "deep"
-        parsed = json.loads(detail["messages"])
-        assert parsed[0]["content"] == "test message"
+        assert isinstance(detail["messages"], list)
+        assert detail["messages"][0]["content"] == "test message"
 
     def test_get_nonexistent_session(self, storage):
         assert storage.get_session_detail("nonexistent") is None
