@@ -2,13 +2,12 @@
 
 import asyncio
 import json
-import math
 import struct
-import pytest
-from unittest.mock import MagicMock, patch
 
-from live_edit.session_memory import SessionMemory, MemoryEntry
+import pytest
+
 from live_edit.config import SessionMemoryConfig
+from live_edit.session_memory import SessionMemory
 
 
 class FakeEmbedder:
@@ -45,11 +44,18 @@ class FakeStorage:
         results = []
         for i, c in enumerate(self._chunks[-limit:]):
             emb = c.get("embedding_bytes", b"")
-            results.append((
-                i, c.get("_sid", ""), c.get("_hash", ""),
-                c.get("chunk_type", ""), c.get("chunk_text", ""),
-                c.get("payload_json", "{}"), c.get("file_path", ""), emb,
-            ))
+            results.append(
+                (
+                    i,
+                    c.get("_sid", ""),
+                    c.get("_hash", ""),
+                    c.get("chunk_type", ""),
+                    c.get("chunk_text", ""),
+                    c.get("payload_json", "{}"),
+                    c.get("file_path", ""),
+                    emb,
+                )
+            )
         return results
 
     def delete_old_sessions(self, keep_count):
@@ -124,13 +130,16 @@ Binary files a/foo.png and b/foo.png differ
 class TestSessionMemoryChunking:
     @pytest.fixture
     def embedder(self):
-        return FakeEmbedder(dim=4, vectors={
-            "add JWT login": [1.0, 0.0, 0.0, 0.0],
-            "add JWT login\nFile: src/auth.py\nChanges: +6/-2": [0.9, 0.1, 0.0, 0.0],
-            "add JWT login\nFile: src/session.py\nChanges: +3/-0": [0.8, 0.0, 0.2, 0.0],
-            "unrelated task": [0.0, 0.0, 0.0, 1.0],
-            "unrelated task\nFile: other.py\nChanges: +1/-1": [0.0, 0.0, 0.0, 1.0],
-        })
+        return FakeEmbedder(
+            dim=4,
+            vectors={
+                "add JWT login": [1.0, 0.0, 0.0, 0.0],
+                "add JWT login\nFile: src/auth.py\nChanges: +6/-2": [0.9, 0.1, 0.0, 0.0],
+                "add JWT login\nFile: src/session.py\nChanges: +3/-0": [0.8, 0.0, 0.2, 0.0],
+                "unrelated task": [0.0, 0.0, 0.0, 1.0],
+                "unrelated task\nFile: other.py\nChanges: +1/-1": [0.0, 0.0, 0.0, 1.0],
+            },
+        )
 
     @pytest.fixture
     def storage(self):
@@ -151,34 +160,39 @@ class TestSessionMemoryChunking:
 
     def test_store_creates_request_and_file_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store(
+                "s1", "add JWT login", ["src/auth.py", "src/session.py"], SAMPLE_DIFF, "abc123"
+            )
+
         asyncio.run(run())
         assert len(storage._chunks) == 3  # 1 request + 2 file_diff
 
     def test_retrieve_finds_relevant_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         assert len(results) >= 1
         assert results[0].request == "add JWT login"
 
     def test_unrelated_query_returns_empty(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("unrelated task")
+
         results = asyncio.run(run())
         assert results == []
 
     def test_session_grouping_top_2(self, sm, storage):
         """Same session should contribute at most 2 chunks."""
+
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store(
+                "s1", "add JWT login", ["src/auth.py", "src/session.py"], SAMPLE_DIFF, "abc123"
+            )
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         # 3 chunks total (1 request + 2 file), but at most 2 returned per session
         s1_results = [r for r in results if r.session_id == "s1"]
@@ -186,10 +200,11 @@ class TestSessionMemoryChunking:
 
     def test_file_diff_preferred_over_request(self, sm, storage):
         """When both match, file_diff chunks rank higher than request chunk."""
+
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         # At least one result should be a file_diff (non-empty file_path)
         has_file = any(r.file_path for r in results)
@@ -197,43 +212,47 @@ class TestSessionMemoryChunking:
 
     def test_eviction_on_store(self, sm, storage):
         sm.config.max_stored_entries = 3
+
         async def run():
             for i in range(5):
-                await sm.store(f"s{i}", f"task {i}", [],
-                               SAMPLE_DIFF, f"hash{i}")
+                await sm.store(f"s{i}", f"task {i}", [], SAMPLE_DIFF, f"hash{i}")
+
         asyncio.run(run())
-        session_ids = set(c.get("_sid") for c in storage._chunks)
+        session_ids = {c.get("_sid") for c in storage._chunks}
         assert len(session_ids) <= 3
 
     def test_continuation_replaces_old_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "first commit", [],
-                           SAMPLE_DIFF, "hash1")
-            await sm.store("s1", "second commit", [],
-                           SAMPLE_DIFF, "hash2")
+            await sm.store("s1", "first commit", [], SAMPLE_DIFF, "hash1")
+            await sm.store("s1", "second commit", [], SAMPLE_DIFF, "hash2")
+
         asyncio.run(run())
         # Should have 3 chunks (1 request + 2 file_diff), not 6
         assert len(storage._chunks) == 3
 
     def test_store_skipped_when_disabled(self, sm, storage):
         sm.config.enabled = False
+
         async def run():
             await sm.store("s1", "test", [], SAMPLE_DIFF, "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 0
 
     def test_retrieve_skipped_when_disabled(self, sm, storage):
         sm.config.enabled = False
+
         async def run():
             return await sm.retrieve("test")
+
         results = asyncio.run(run())
         assert results == []
 
     def test_memory_entry_fields_populated(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         assert len(results) >= 1
         entry = results[0]
@@ -243,8 +262,8 @@ class TestSessionMemoryChunking:
 
     def test_empty_diff_stores_request_chunk_only(self, sm, storage):
         async def run():
-            await sm.store("s1", "no files changed", [],
-                           "", "hash")
+            await sm.store("s1", "no files changed", [], "", "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 1
         assert storage._chunks[0]["chunk_type"] == "request"
@@ -255,9 +274,10 @@ class TestSessionMemoryChunking:
 index abc..def 100644
 Binary files a/img.png and b/img.png differ
 """
+
         async def run():
-            await sm.store("s1", "add image", [],
-                           bin_diff, "hash")
+            await sm.store("s1", "add image", [], bin_diff, "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 1
         assert storage._chunks[0]["chunk_type"] == "request"
@@ -269,6 +289,7 @@ class TestMigration:
     @pytest.fixture
     def real_sqlite_storage(self, tmp_path):
         import sqlite3
+
         db_path = str(tmp_path / "test_migrate.db")
         conn = sqlite3.connect(db_path)
         conn.execute("""
@@ -307,15 +328,15 @@ class TestMigration:
         conn.close()
 
         from live_edit.storage import SQLiteStorage
+
         return SQLiteStorage(db_path)
 
     def test_migration_copies_old_data(self, real_sqlite_storage):
-        from live_edit.embedder import LocalEmbedder
         storage = real_sqlite_storage
         assert storage.get_db_version() == 0
 
         # Create SessionMemory with a fake embedder; migration runs in __init__
-        sm = SessionMemory(
+        sm = SessionMemory(  # noqa: F841
             storage=storage,
             embedder=FakeEmbedder(dim=4),
             config=SessionMemoryConfig(enabled=True),
@@ -358,6 +379,7 @@ class TestMigration:
 
     def test_migration_skips_when_no_old_table(self, tmp_path):
         import sqlite3
+
         db_path = str(tmp_path / "test_fresh.db")
         conn = sqlite3.connect(db_path)
         conn.execute("""
@@ -377,6 +399,7 @@ class TestMigration:
         conn.close()
 
         from live_edit.storage import SQLiteStorage
+
         storage = SQLiteStorage(db_path)
         assert storage.get_db_version() == 0
 

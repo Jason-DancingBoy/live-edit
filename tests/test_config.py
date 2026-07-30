@@ -1,15 +1,8 @@
 """Tests for live_edit.config — config parsing, validation, auto-detection."""
 
-import pytest
 from live_edit.config import (
-    Config,
-    LLMConfig,
-    SafetyConfig,
-    TimeoutsConfig,
-    ModeConfig,
-    ModePromptConfig,
-    parse_config,
     detect_project,
+    parse_config,
     validate_config,
 )
 
@@ -286,6 +279,7 @@ class TestDetectProject:
 
     def test_detects_git_available(self, tmp_path):
         import subprocess
+
         (tmp_path / "pyproject.toml").write_text("[project]\nname='test'\n")
         subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), capture_output=True)
         info = detect_project(str(tmp_path))

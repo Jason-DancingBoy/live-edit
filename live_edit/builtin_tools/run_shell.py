@@ -2,8 +2,8 @@
 
 import subprocess
 
-from ..tool_registry import ToolDef
 from ..safety import check_shell_cmd
+from ..tool_registry import ToolDef
 
 
 async def execute(args: dict, project_root: str, config=None) -> dict:
@@ -12,12 +12,16 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     if err:
         return {"ok": False, "error": err}
     timeout = 30
-    if config and hasattr(config, 'timeouts'):
-        timeout = getattr(config.timeouts, 'shell_command', 30)
+    if config and hasattr(config, "timeouts"):
+        timeout = getattr(config.timeouts, "shell_command", 30)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=project_root,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:5000]
         return {"ok": True, "cmd": cmd, "output": output, "exit_code": result.returncode}

@@ -3,10 +3,9 @@
 New code should use live_edit.tool_registry directly.
 """
 
-from .safety import safe_path as _safe_path, check_shell_cmd as _check_shell_cmd, check_write_allowed as _check_write_allowed
-
 
 # ── Formatting helpers ──
+
 
 def _trunc(s: str | None, n: int = 80) -> str:
     """Truncate s to n chars, adding … if cut."""
@@ -66,7 +65,7 @@ def _summarize_thinking(text: str, max_chars: int = 300) -> str:
     for sep in ("\n\n", "\n", "。", "！", "？", "；"):
         pos = chunk.rfind(sep)
         if pos > max_chars * 0.5:
-            return chunk[:pos + len(sep)] + "…"
+            return chunk[: pos + len(sep)] + "…"
     last_space = chunk.rfind(" ")
     if last_space > max_chars * 0.5:
         return chunk[:last_space] + "…"
@@ -83,9 +82,9 @@ def _set_registry(registry):
     _registry = registry
 
 
-TOOLS = []
-QA_TOOLS = []
-_WRITE_TOOLS = set()
+TOOLS: list = []
+QA_TOOLS: list = []
+_WRITE_TOOLS: set = set()
 
 
 def _refresh_globals(mode: str = "quick"):
@@ -98,11 +97,11 @@ def _refresh_globals(mode: str = "quick"):
 
 def get_mode_tools(mode: str, config=None) -> list[dict]:
     if _registry is not None:
-        return _registry.get_tools(mode)
+        return _registry.get_tools(mode)  # type: ignore[no-any-return]
     return []
 
 
 async def execute_tool(name: str, args: dict, project_root: str, config=None) -> dict:
     if _registry is not None:
-        return await _registry.execute(name, args, project_root, config)
+        return await _registry.execute(name, args, project_root, config)  # type: ignore[no-any-return]
     return {"ok": False, "error": "Tool registry not initialized"}

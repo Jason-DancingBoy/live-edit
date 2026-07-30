@@ -1,7 +1,7 @@
 """Read file contents tool."""
 
-from ..tool_registry import ToolDef
 from ..safety import safe_path
+from ..tool_registry import ToolDef
 
 
 async def execute(args: dict, project_root: str, config=None) -> dict:
@@ -9,7 +9,7 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     start = args.get("start", 1) - 1
     end = args.get("end")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
     except FileNotFoundError:
         return {"ok": False, "error": f"文件不存在: {args['path']}"}

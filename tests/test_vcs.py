@@ -5,7 +5,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from live_edit.vcs import GitVCS, RevertPreview, RevertResult
+
+from live_edit.vcs import GitVCS, RevertPreview
 
 
 @pytest.fixture
@@ -15,11 +16,13 @@ def git_repo(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True)
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"],
-        cwd=repo, capture_output=True,
+        cwd=repo,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
-        cwd=repo, capture_output=True,
+        cwd=repo,
+        capture_output=True,
     )
     # Initial commit so reverts have something to work with
     (tmp_path / "initial.txt").write_text("initial")
@@ -38,8 +41,10 @@ class TestGitVCS:
         assert len(hash_val) > 0
         # Verify it's in git log
         result = subprocess.run(
-            ["git", "log", "--oneline"], cwd=str(git_repo),
-            capture_output=True, text=True,
+            ["git", "log", "--oneline"],
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         )
         assert "live-edit: test commit" in result.stdout
 
@@ -50,7 +55,8 @@ class TestGitVCS:
         # Commit first so there is something to diff against
         subprocess.run(
             ["git", "commit", "-m", "live-edit: add changed.py"],
-            cwd=str(git_repo), capture_output=True,
+            cwd=str(git_repo),
+            capture_output=True,
         )
         # Now modify to create an unstaged change for diff
         (git_repo / "changed.py").write_text("print('changed again')")
@@ -65,11 +71,14 @@ class TestGitVCS:
         subprocess.run(["git", "add", "rev.py"], cwd=str(git_repo), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "live-edit: add rev.py"],
-            cwd=str(git_repo), capture_output=True,
+            cwd=str(git_repo),
+            capture_output=True,
         )
         hash1 = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         # Commit 2: modify rev.py so there's a range to revert
@@ -77,7 +86,8 @@ class TestGitVCS:
         subprocess.run(["git", "add", "rev.py"], cwd=str(git_repo), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "live-edit: update rev.py"],
-            cwd=str(git_repo), capture_output=True,
+            cwd=str(git_repo),
+            capture_output=True,
         )
 
         # Revert from hash1 (just after commit 1) through HEAD
@@ -105,11 +115,14 @@ class TestGitVCS:
         subprocess.run(["git", "add", "conflict.py"], cwd=str(git_repo), capture_output=True)
         hash1 = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         subprocess.run(
             ["git", "commit", "-m", "live-edit: add conflict.py"],
-            cwd=str(git_repo), capture_output=True,
+            cwd=str(git_repo),
+            capture_output=True,
         )
 
         # Make a conflicting change
@@ -117,12 +130,15 @@ class TestGitVCS:
         subprocess.run(["git", "add", "conflict.py"], cwd=str(git_repo), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "live-edit: modify conflict.py"],
-            cwd=str(git_repo), capture_output=True,
+            cwd=str(git_repo),
+            capture_output=True,
         )
 
-        hash2 = subprocess.run(
+        subprocess.run(  # hash not needed
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         # Reverting from hash1 through HEAD might conflict
@@ -135,6 +151,7 @@ class TestGitVCS:
 class TestRemoveWorktreeDir:
     def test_removes_worktree_keeps_branch(self, git_repo):
         from live_edit.vcs import GitVCS
+
         vcs = GitVCS(git_repo)
         wt_path = vcs.create_worktree("sess-keep")
         # 在 worktree 里写文件并提交，让分支有 commit
@@ -148,7 +165,9 @@ class TestRemoveWorktreeDir:
         # 分支仍存在
         branches = subprocess.run(
             ["git", "branch", "--list", "live-edit/sess-keep"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout
         assert "live-edit/sess-keep" in branches
 
@@ -156,6 +175,7 @@ class TestRemoveWorktreeDir:
 class TestDiscardSessionBranch:
     def test_discards_worktree_and_branch(self, git_repo):
         from live_edit.vcs import GitVCS
+
         vcs = GitVCS(git_repo)
         wt_path = vcs.create_worktree("sess-d")
         (Path(wt_path) / "f.py").write_text("x")
@@ -166,12 +186,15 @@ class TestDiscardSessionBranch:
         assert not os.path.isdir(wt_path)
         branches = subprocess.run(
             ["git", "branch", "--list", "live-edit/sess-d"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout
         assert "live-edit/sess-d" not in branches
 
     def test_discard_tolerates_already_removed_worktree(self, git_repo):
         from live_edit.vcs import GitVCS
+
         vcs = GitVCS(git_repo)
         wt_path = vcs.create_worktree("sess-d2")
         vcs.remove_worktree_dir(wt_path, "sess-d2")  # worktree 已删，分支还在
@@ -180,7 +203,9 @@ class TestDiscardSessionBranch:
         vcs.discard_session_branch("sess-d2")
         branches = subprocess.run(
             ["git", "branch", "--list", "live-edit/sess-d2"],
-            cwd=str(git_repo), capture_output=True, text=True,
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
         ).stdout
         assert "live-edit/sess-d2" not in branches
 
@@ -188,6 +213,7 @@ class TestDiscardSessionBranch:
 class TestListUnmergedBranches:
     def test_returns_only_unmerged(self, git_repo):
         from live_edit.vcs import GitVCS
+
         vcs = GitVCS(git_repo)
 
         # 分支 A：提交后合入 main

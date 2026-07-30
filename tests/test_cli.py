@@ -1,9 +1,5 @@
 """Tests for live_edit.cli — live-edit init and check commands."""
 
-import os
-import pytest
-from unittest.mock import patch, MagicMock
-
 
 class TestCliInit:
     def test_init_creates_config_file(self, tmp_path):
@@ -32,7 +28,7 @@ class TestCliInit:
 
         assert result is True
         content = (tmp_path / ".live-edit.toml").read_text()
-        assert 'language = "javascript"' in content or 'node-app' in content
+        assert 'language = "javascript"' in content or "node-app" in content
 
     def test_init_refuses_to_overwrite_existing(self, tmp_path):
         """live-edit init refuses to overwrite existing config without --force."""

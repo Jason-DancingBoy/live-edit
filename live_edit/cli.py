@@ -30,7 +30,7 @@ def cmd_init(root: str = ".", force: bool = False) -> bool:
     print(f"已生成配置文件: {config_path}")
     print(f"  检测到项目: {project.get('name', 'unknown')}")
     print(f"  语言: {project.get('language', 'unknown')}")
-    framework = project.get('framework', '')
+    framework = project.get("framework", "")
     if framework:
         print(f"  框架: {framework}")
     print()
@@ -76,7 +76,7 @@ def _render_config(config) -> list[str]:
     """Render a Config object as TOML lines."""
     lines = []
     p = config.project
-    l = config.llm
+    llm = config.llm
     s = config.safety
     t = config.timeouts
     sess = config.sessions
@@ -89,32 +89,32 @@ def _render_config(config) -> list[str]:
     if p.framework:
         lines.append(f'framework = "{p.framework}"')
     lines.append(f'root = "{p.root}"')
-    extra = getattr(p, 'extra_context', '')
+    extra = getattr(p, "extra_context", "")
     if extra:
         lines.append(f'extra_context = """{extra}"""')
     lines.append("")
 
     lines.append("[llm]")
-    lines.append(f'provider = "{l.provider}"')
-    lines.append(f'api_url = "{l.api_url}"')
-    lines.append(f'api_key_env = "{l.api_key_env}"')
-    lines.append(f'model = "{l.model}"')
+    lines.append(f'provider = "{llm.provider}"')
+    lines.append(f'api_url = "{llm.api_url}"')
+    lines.append(f'api_key_env = "{llm.api_key_env}"')
+    lines.append(f'model = "{llm.model}"')
     lines.append("")
 
     lines.append("[safety]")
     if s.allowed_dirs:
-        dirs = ', '.join(f'"{d}"' for d in s.allowed_dirs)
+        dirs = ", ".join(f'"{d}"' for d in s.allowed_dirs)
         lines.append(f"allowed_dirs = [{dirs}]")
     if s.overwrite_allowed_dirs:
-        dirs = ', '.join(f'"{d}"' for d in s.overwrite_allowed_dirs)
+        dirs = ", ".join(f'"{d}"' for d in s.overwrite_allowed_dirs)
         lines.append(f"overwrite_allowed_dirs = [{dirs}]")
     lines.append(f"allow_overwrite_existing = {str(s.allow_overwrite_existing).lower()}")
-    blocked = getattr(s, 'blocked_commands', [])
+    blocked = getattr(s, "blocked_commands", [])
     if blocked:
-        cmds = ', '.join(f'"{c}"' for c in blocked)
+        cmds = ", ".join(f'"{c}"' for c in blocked)
         lines.append(f"blocked_commands = [{cmds}]")
     if s.search_extensions:
-        exts = ', '.join(f'"{e}"' for e in s.search_extensions)
+        exts = ", ".join(f'"{e}"' for e in s.search_extensions)
         lines.append(f"search_extensions = [{exts}]")
     lines.append("")
 
@@ -134,7 +134,7 @@ def _render_config(config) -> list[str]:
     lines.append("[hooks]")
     if h.post_revert:
         lines.append(f'post_revert = "{h.post_revert}"')
-    pre_commit = getattr(h, 'pre_commit', '')
+    pre_commit = getattr(h, "pre_commit", "")
     if pre_commit:
         lines.append(f'pre_commit = "{pre_commit}"')
     lines.append("")
@@ -150,7 +150,7 @@ def _render_config(config) -> list[str]:
         lines.append(f'approval = "{mode.approval}"')
         lines.append(f'tools = "{mode.tools}"')
         if mode.approve_for:
-            af = ', '.join(f'"{a}"' for a in mode.approve_for)
+            af = ", ".join(f'"{a}"' for a in mode.approve_for)
             lines.append(f"approve_for = [{af}]")
         lines.append("")
 
@@ -175,8 +175,8 @@ def _render_config(config) -> list[str]:
     lines.append("")
 
     # Error translations
-    err_quick = config.errors.quick if hasattr(config.errors, 'quick') else {}
-    err_deep = config.errors.deep if hasattr(config.errors, 'deep') else {}
+    err_quick = config.errors.quick if hasattr(config.errors, "quick") else {}
+    err_deep = config.errors.deep if hasattr(config.errors, "deep") else {}
     if err_quick or err_deep:
         for err_name, err_map in [("quick", err_quick), ("deep", err_deep)]:
             if err_map:

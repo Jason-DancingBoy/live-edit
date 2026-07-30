@@ -6,8 +6,8 @@ import logging
 import os
 import subprocess
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Callable, Awaitable
 
 logger = logging.getLogger("live-edit.tool-registry")
 
@@ -15,15 +15,16 @@ logger = logging.getLogger("live-edit.tool-registry")
 @dataclass
 class ToolDef:
     """Definition of a single tool."""
+
     name: str
     description: str
     input_schema: dict
     execute: Callable[[dict, str, object], Awaitable[dict]]
-    modes: list[str] | None = None       # None = all modes
+    modes: list[str] | None = None  # None = all modes
     is_write: bool = False
     require_approval: bool = False
     timeout: int = 30
-    priority: int = 0                     # higher = wins on name collision
+    priority: int = 0  # higher = wins on name collision
 
     def to_anthropic_schema(self) -> dict:
         return {
@@ -96,7 +97,8 @@ class DefaultToolRegistry(ToolRegistry):
 
     def get_write_tool_names(self, mode: str) -> set[str]:
         return {
-            t.name for t in self._tools.values()
+            t.name
+            for t in self._tools.values()
             if t.visible_in_mode(mode) and (t.is_write or t.require_approval)
         }
 
@@ -114,6 +116,7 @@ class DefaultToolRegistry(ToolRegistry):
             return {"ok": False, "error": f"工具 {name} 执行超时"}
         except Exception as e:
             import traceback
+
             logger.error("Tool %s error: %s\n%s", name, e, traceback.format_exc())
             return {"ok": False, "error": str(e)}
 
@@ -125,16 +128,18 @@ class DefaultToolRegistry(ToolRegistry):
     def load_builtin_tools(self):
         """Import and register all tools from live_edit.builtin_tools."""
         from . import builtin_tools
+
         for mod in builtin_tools.ALL_MODULES:
             tool_def = mod.create()
-            tool_def.priority = 10   # built-in priority
+            tool_def.priority = 10  # built-in priority
             self.register(tool_def)
 
     def load_toml_tools(self, config):
         """Parse [[tools]] sections from config and register shell-based tools."""
-        if not config or not hasattr(config, 'toml_tools'):
+        if not config or not hasattr(config, "toml_tools"):
             return
         from .safety import check_shell_cmd
+
         for t in config.toml_tools:
             cmd = t["command"]
             timeout_val = t.get("timeout", 30)
@@ -149,14 +154,23 @@ class DefaultToolRegistry(ToolRegistry):
                         return {"ok": False, "error": err}
                     try:
                         result = subprocess.run(
-                            resolved, shell=True, capture_output=True, text=True,
-                            timeout=timeout, cwd=project_root,
+                            resolved,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout,
+                            cwd=project_root,
                         )
                         output = (result.stdout + result.stderr)[:5000]
-                        return {"ok": True, "cmd": resolved, "output": output,
-                                "exit_code": result.returncode}
+                        return {
+                            "ok": True,
+                            "cmd": resolved,
+                            "output": output,
+                            "exit_code": result.returncode,
+                        }
                     except subprocess.TimeoutExpired:
                         return {"ok": False, "error": "命令执行超时"}
+
                 return _exec
 
             tool_def = ToolDef(
@@ -207,9 +221,15 @@ def set_global_registry(registry: DefaultToolRegistry):
     _global_registry = registry
 
 
-def tool(name: str, description: str, modes: list[str] | None = None,
-         is_write: bool = False, require_approval: bool = False, timeout: int = 30,
-         input_schema: dict | None = None):
+def tool(
+    name: str,
+    description: str,
+    modes: list[str] | None = None,
+    is_write: bool = False,
+    require_approval: bool = False,
+    timeout: int = 30,
+    input_schema: dict | None = None,
+):
     """Decorator to register a Python function as a tool in the global registry.
 
     Usage:
@@ -217,6 +237,7 @@ def tool(name: str, description: str, modes: list[str] | None = None,
         async def my_tool(args, project_root, config):
             return {"ok": True}
     """
+
     def deco(fn):
         schema = input_schema or {
             "type": "object",
@@ -239,4 +260,5 @@ def tool(name: str, description: str, modes: list[str] | None = None,
         if _global_registry is not None:
             _global_registry.register(td)
         return fn
+
     return deco

@@ -2,18 +2,23 @@
 
 import os
 import tempfile
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+
+import live_edit.tools as _t
+from live_edit.config import SafetyConfig
 from live_edit.safety import (
-    safe_path,
     check_shell_cmd,
     check_write_allowed,
+    safe_path,
 )
 from live_edit.tools import (
-    _tool_summary,
-    _summarize_thinking,
     _size_fmt,
+    _summarize_thinking,
+    _tool_summary,
     _trunc,
+    execute_tool,
 )
 
 
@@ -93,23 +98,28 @@ class TestCheckWriteAllowed:
     def test_new_file_in_overwrite_dir_allowed(self, tmp_path):
         (tmp_path / "static").mkdir()
         err = check_write_allowed(
-            "static/app.js", str(tmp_path),
-            allow_overwrite=False, overwrite_dirs=["static"],
+            "static/app.js",
+            str(tmp_path),
+            allow_overwrite=False,
+            overwrite_dirs=["static"],
         )
         assert err is None
 
     def test_overwrite_existing_outside_overwrite_dir_blocked(self, tmp_path):
         (tmp_path / "server.py").write_text("x=1")
         err = check_write_allowed(
-            "server.py", str(tmp_path),
-            allow_overwrite=False, overwrite_dirs=["static"],
+            "server.py",
+            str(tmp_path),
+            allow_overwrite=False,
+            overwrite_dirs=["static"],
         )
         assert err is not None
 
     def test_overwrite_existing_with_global_flag_allowed(self, tmp_path):
         (tmp_path / "server.py").write_text("x=1")
         err = check_write_allowed(
-            "server.py", str(tmp_path),
+            "server.py",
+            str(tmp_path),
             allow_overwrite=True,
         )
         assert err is None
@@ -122,7 +132,10 @@ class TestToolSummary:
         assert "L10-20" in result
 
     def test_edit_file(self):
-        result = _tool_summary("edit_file", {"path": "index.html", "old_string": ".btn { border: 1px solid red"})
+        result = _tool_summary(
+            "edit_file",
+            {"path": "index.html", "old_string": ".btn { border: 1px solid red"},
+        )
         assert "index.html" in result
         assert ".btn" in result
 
@@ -188,8 +201,6 @@ class TestTrunc:
 
 # ── Tool definitions ──
 
-import live_edit.tools as _t
-
 
 class TestToolDefinitions:
     def test_all_tools_have_name_description_schema(self):
@@ -224,11 +235,6 @@ class TestWriteToolsSet:
 
 
 # ── Tool execution ──
-
-import tempfile
-import os
-from live_edit.tools import execute_tool
-from live_edit.config import SafetyConfig
 
 
 class TestExecuteTool:
@@ -286,11 +292,15 @@ class TestExecuteTool:
         try:
             root = os.path.dirname(fpath)
             fname = os.path.basename(fpath)
-            result = await execute_tool("edit_file", {
-                "path": fname,
-                "old_string": "original",
-                "new_string": "modified",
-            }, root)
+            result = await execute_tool(
+                "edit_file",
+                {
+                    "path": fname,
+                    "old_string": "original",
+                    "new_string": "modified",
+                },
+                root,
+            )
             assert result["ok"] is True
             assert result["modified"] is True
 
@@ -308,11 +318,15 @@ class TestExecuteTool:
         try:
             root = os.path.dirname(fpath)
             fname = os.path.basename(fpath)
-            result = await execute_tool("edit_file", {
-                "path": fname,
-                "old_string": "nonexistent",
-                "new_string": "replacement",
-            }, root)
+            result = await execute_tool(
+                "edit_file",
+                {
+                    "path": fname,
+                    "old_string": "nonexistent",
+                    "new_string": "replacement",
+                },
+                root,
+            )
             assert result["ok"] is False
             assert "未找到" in result["error"]
         finally:
@@ -327,11 +341,15 @@ class TestExecuteTool:
         try:
             root = os.path.dirname(fpath)
             fname = os.path.basename(fpath)
-            result = await execute_tool("edit_file", {
-                "path": fname,
-                "old_string": "dup",
-                "new_string": "unique",
-            }, root)
+            result = await execute_tool(
+                "edit_file",
+                {
+                    "path": fname,
+                    "old_string": "dup",
+                    "new_string": "unique",
+                },
+                root,
+            )
             assert result["ok"] is False
             assert "匹配了" in result["error"]
         finally:
@@ -339,20 +357,28 @@ class TestExecuteTool:
 
     @pytest.mark.asyncio
     async def test_write_file_new(self, tmp_path):
-        result = await execute_tool("write_file", {
-            "path": "new.py",
-            "content": "print('hello')",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "write_file",
+            {
+                "path": "new.py",
+                "content": "print('hello')",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is True
         assert (tmp_path / "new.py").read_text() == "print('hello')"
 
     @pytest.mark.asyncio
     async def test_write_file_existing_not_allowed(self, tmp_path):
         (tmp_path / "existing.py").write_text("old")
-        result = await execute_tool("write_file", {
-            "path": "existing.py",
-            "content": "new",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "write_file",
+            {
+                "path": "existing.py",
+                "content": "new",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is False
 
     @pytest.mark.asyncio
@@ -360,42 +386,62 @@ class TestExecuteTool:
         static_dir = tmp_path / "static"
         static_dir.mkdir()
         (static_dir / "old.css").write_text("old")
-        result = await execute_tool("write_file", {
-            "path": "static/old.css",
-            "content": "new css",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "write_file",
+            {
+                "path": "static/old.css",
+                "content": "new css",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is True
 
     @pytest.mark.asyncio
     async def test_write_file_create_parent_dirs(self, tmp_path):
-        result = await execute_tool("write_file", {
-            "path": "deep/nested/file.txt",
-            "content": "deep",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "write_file",
+            {
+                "path": "deep/nested/file.txt",
+                "content": "deep",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is True
         assert (tmp_path / "deep" / "nested" / "file.txt").read_text() == "deep"
 
     @pytest.mark.asyncio
     async def test_run_shell_safe(self, tmp_path):
-        result = await execute_tool("run_shell", {
-            "cmd": "echo hello",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "run_shell",
+            {
+                "cmd": "echo hello",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is True
         assert "hello" in result["output"]
 
     @pytest.mark.asyncio
     async def test_run_shell_dangerous_blocked(self, tmp_path):
-        result = await execute_tool("run_shell", {
-            "cmd": "rm -rf /",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "run_shell",
+            {
+                "cmd": "rm -rf /",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is False
         assert "危险" in result["error"]
 
     @pytest.mark.asyncio
     async def test_run_shell_redirect_checked(self, tmp_path):
-        result = await execute_tool("run_shell", {
-            "cmd": "echo data > /tmp/evil.txt",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "run_shell",
+            {
+                "cmd": "echo data > /tmp/evil.txt",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is False
 
     @pytest.mark.asyncio
@@ -419,10 +465,14 @@ class TestExecuteTool:
     @pytest.mark.asyncio
     async def test_search_code(self, tmp_path):
         (tmp_path / "search_me.py").write_text("TODO: fix this")
-        result = await execute_tool("search_code", {
-            "pattern": "TODO",
-            "path": ".",
-        }, str(tmp_path))
+        result = await execute_tool(
+            "search_code",
+            {
+                "pattern": "TODO",
+                "path": ".",
+            },
+            str(tmp_path),
+        )
         assert result["ok"] is True
         assert "TODO" in result["matches"]
 
@@ -432,9 +482,14 @@ class TestExecuteTool:
         config = MagicMock()
         config.safety = SafetyConfig(search_extensions=["*.css"])
 
-        result = await execute_tool("search_code", {
-            "pattern": "TODO",
-        }, str(tmp_path), config=config)
+        result = await execute_tool(
+            "search_code",
+            {
+                "pattern": "TODO",
+            },
+            str(tmp_path),
+            config=config,
+        )
         assert result["ok"] is True
         assert "TODO" in result["matches"]
 

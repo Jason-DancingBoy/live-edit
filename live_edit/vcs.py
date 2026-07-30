@@ -5,8 +5,7 @@ import os
 import shutil
 import subprocess
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-
+from dataclasses import dataclass, field
 
 logger = logging.getLogger("live-edit.vcs")
 
@@ -19,15 +18,15 @@ def _symlink_config(repo_path: str, worktree_path: str, filename: str):
     Some config files (like .live-edit.toml) are gitignored and don't appear in
     worktrees, but are needed by the preview server.
     """
+    import contextlib
     import os as _os
+
     src = _os.path.join(repo_path, filename)
     src = _os.path.abspath(src)
     dst = _os.path.join(worktree_path, filename)
     if _os.path.exists(src) and not _os.path.exists(dst):
-        try:
+        with contextlib.suppress(OSError):
             _os.symlink(src, dst)
-        except OSError:
-            pass
 
 
 @dataclass
@@ -37,7 +36,7 @@ class RevertPreview:
     files: list[str]
 
     diff_summary: str = ""
-    conflicts: list[str] = ()
+    conflicts: list[str] = field(default_factory=list)
     error: str = ""
 
     def __post_init__(self):
@@ -103,6 +102,7 @@ class VCS(ABC):
         """Remove the worktree (if still present) and delete branch live-edit/<session_id>."""
         ...
 
+    @abstractmethod
     def remove_worktree_dir(self, worktree_path: str, session_id: str):
         """Remove the worktree directory only; keep the live-edit/<session_id> branch."""
         ...
@@ -157,7 +157,10 @@ class GitVCS(VCS):
         for candidate in ("main", "master"):
             result = subprocess.run(
                 ["git", "rev-parse", "--verify", candidate],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             if result.returncode == 0:
                 self._main_branch = candidate
@@ -177,7 +180,10 @@ class GitVCS(VCS):
         try:
             result = subprocess.run(
                 ["git", "worktree", "list", "--porcelain"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             registered = set()
             for line in result.stdout.split("\n"):
@@ -214,12 +220,17 @@ class GitVCS(VCS):
         main = self.get_main_branch()
         subprocess.run(
             ["git", "worktree", "add", "--detach", worktree_path, main],
-            capture_output=True, text=True, timeout=30, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=self.repo_path,
             check=True,
         )
         subprocess.run(
             ["git", "-C", worktree_path, "checkout", "-b", f"live-edit/{session_id}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             check=True,
         )
         # Symlink config files that aren't tracked by git but are needed
@@ -243,12 +254,18 @@ class GitVCS(VCS):
         if worktree_path and os.path.isdir(worktree_path):
             subprocess.run(
                 ["git", "worktree", "remove", "--force", worktree_path],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
         # Delete the session branch from the main repo
         subprocess.run(
             ["git", "branch", "-D", f"live-edit/{session_id}"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         logger.info("Discarded session branch live-edit/%s", session_id)
 
@@ -257,7 +274,10 @@ class GitVCS(VCS):
         args = ["git", "worktree", "remove", "--force", worktree_path]
         subprocess.run(
             args,
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         logger.info("Removed worktree dir (kept branch) for session %s", session_id)
 
@@ -267,7 +287,10 @@ class GitVCS(VCS):
         try:
             result = subprocess.run(
                 ["git", "worktree", "list", "--porcelain"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             # Parse porcelain output: each worktree has lines like:
             # worktree /path
@@ -279,13 +302,13 @@ class GitVCS(VCS):
                 if line.startswith("worktree "):
                     if current:
                         worktrees.append(current)
-                    current = {"path": line[len("worktree "):]}
+                    current = {"path": line[len("worktree ") :]}
                 elif line.startswith("HEAD "):
                     if current is not None:
-                        current["commit_hash"] = line[len("HEAD "):][:8]
+                        current["commit_hash"] = line[len("HEAD ") :][:8]
                 elif line.startswith("branch "):
                     if current is not None:
-                        branch_ref = line[len("branch "):]
+                        branch_ref = line[len("branch ") :]
                         current["branch"] = branch_ref.replace("refs/heads/", "")
             if current:
                 worktrees.append(current)
@@ -297,7 +320,7 @@ class GitVCS(VCS):
         for wt in worktrees:
             branch = wt.get("branch", "")
             if branch.startswith("live-edit/"):
-                wt["session_id"] = branch[len("live-edit/"):]
+                wt["session_id"] = branch[len("live-edit/") :]
                 live_edit_wts.append(wt)
         return live_edit_wts
 
@@ -305,10 +328,16 @@ class GitVCS(VCS):
         """Return live-edit/* branches not yet merged into main."""
         main = self.get_main_branch()
         result = subprocess.run(
-            ["git", "for-each-ref",
-             "--format=%(refname:short)|%(objectname:short)|%(committerdate:iso)|%(subject)",
-             "refs/heads/live-edit/*"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            [
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)|%(objectname:short)|%(committerdate:iso)|%(subject)",
+                "refs/heads/live-edit/*",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         out = []
         for line in result.stdout.strip().split("\n"):
@@ -322,18 +351,21 @@ class GitVCS(VCS):
             # Skip if already merged into main
             anc = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", branch, main],
-                capture_output=True, cwd=self.repo_path,
+                capture_output=True,
+                cwd=self.repo_path,
             )
             if anc.returncode == 0:
                 continue
-            session_id = branch[len("live-edit/"):]
-            out.append({
-                "session_id": session_id,
-                "branch": branch,
-                "commit_hash": short_hash,
-                "commit_time": ctime,
-                "subject": subject,
-            })
+            session_id = branch[len("live-edit/") :]
+            out.append(
+                {
+                    "session_id": session_id,
+                    "branch": branch,
+                    "commit_hash": short_hash,
+                    "commit_time": ctime,
+                    "subject": subject,
+                }
+            )
         return out
 
     # ── Commit / merge (worktree-aware) ──
@@ -341,17 +373,23 @@ class GitVCS(VCS):
     def commit_in_worktree(self, worktree_path: str, files: list[str], message: str) -> str:
         subprocess.run(
             ["git", "-C", worktree_path, "add", "--"] + files,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             check=False,
         )
         subprocess.run(
             ["git", "-C", worktree_path, "commit", "-m", message],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             check=False,
         )
         result = subprocess.run(
             ["git", "-C", worktree_path, "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return result.stdout.strip()
 
@@ -361,25 +399,37 @@ class GitVCS(VCS):
         # Ensure we're on the main branch
         subprocess.run(
             ["git", "checkout", main],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
             check=False,
         )
         result = subprocess.run(
             ["git", "merge", "--no-ff", "-m", message, commit_hash],
-            capture_output=True, text=True, timeout=30, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=self.repo_path,
         )
         if result.returncode != 0:
             raise RuntimeError(f"Merge conflict:\n{result.stderr[:1000]}")
         hash_result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         return hash_result.stdout.strip()
 
     def abort_merge(self):
         subprocess.run(
             ["git", "merge", "--abort"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
 
     # ── Original commit (for backward compat — delegates to worktree commit now) ──
@@ -387,111 +437,163 @@ class GitVCS(VCS):
     def commit(self, files: list[str], message: str) -> str:
         subprocess.run(
             ["git", "add", "--"] + files,
-            capture_output=True, text=True,
-            timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
             check=False,
         )
         subprocess.run(
             ["git", "commit", "-m", message],
-            capture_output=True, text=True,
-            timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
             check=False,
         )
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True,
-            timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         return result.stdout.strip()
 
     def diff_stat(self, files: list[str]) -> str:
         result = subprocess.run(
             ["git", "diff", "--stat", "--"] + files,
-            capture_output=True, text=True,
-            timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         return result.stdout.strip() or "(无变更)"
 
     def diff_full(self, files: list[str]) -> str:
         result = subprocess.run(
             ["git", "diff", "--"] + files,
-            capture_output=True, text=True,
-            timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         return result.stdout.strip()
 
     def revert_preview(self, commit_hash: str) -> RevertPreview:
         if not commit_hash:
-            return RevertPreview(ok=False, can_revert=False, files=[],
-                                 error="缺少 commit hash")
+            return RevertPreview(ok=False, can_revert=False, files=[], error="缺少 commit hash")
 
         result = subprocess.run(
             ["git", "log", "-1", "--format=%s", commit_hash],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         if result.returncode != 0:
-            return RevertPreview(ok=False, can_revert=False, files=[],
-                                 error=f"commit {commit_hash} 不存在")
+            return RevertPreview(
+                ok=False, can_revert=False, files=[], error=f"commit {commit_hash} 不存在"
+            )
         msg = result.stdout.strip()
         if not (msg.startswith("live-edit:") or msg.startswith("dev-mode:")):
-            return RevertPreview(ok=False, can_revert=False, files=[],
-                                 error="只能回滚 LiveEdit 做出的修改")
+            return RevertPreview(
+                ok=False, can_revert=False, files=[], error="只能回滚 LiveEdit 做出的修改"
+            )
 
         # Check for uncommitted changes to tracked files before revert.
         # Untracked files (??) don't block git revert, so exclude them with -uno.
         status = subprocess.run(
             ["git", "status", "--porcelain", "-uno"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         if status.stdout.strip():
-            return RevertPreview(ok=False, can_revert=False, files=[],
-                                 error="工作区有未提交的修改，请先提交或放弃后再回滚")
+            return RevertPreview(
+                ok=False,
+                can_revert=False,
+                files=[],
+                error="工作区有未提交的修改，请先提交或放弃后再回滚",
+            )
 
         # Get live-edit commits in the range (from target exclusive to HEAD inclusive)
         rev_result = subprocess.run(
-            ["git", "rev-list", "--reverse", f"{commit_hash}..HEAD",
-             "--grep=live-edit:", "--grep=dev-mode:"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            [
+                "git",
+                "rev-list",
+                "--reverse",
+                f"{commit_hash}..HEAD",
+                "--grep=live-edit:",
+                "--grep=dev-mode:",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         target_commits = [c for c in rev_result.stdout.strip().split("\n") if c]
 
         if not target_commits:
-            return RevertPreview(ok=False, can_revert=False, files=[],
-                                 error="没有可回滚的 LiveEdit 提交")
+            return RevertPreview(
+                ok=False, can_revert=False, files=[], error="没有可回滚的 LiveEdit 提交"
+            )
 
         # Revert each commit individually: merge commits need -m 1
         for c in target_commits:
-            is_merge = subprocess.run(
-                ["git", "rev-list", "--merges", "-1", c],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
-            ).returncode == 0
+            is_merge = (
+                subprocess.run(
+                    ["git", "rev-list", "--merges", "-1", c],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=self.repo_path,
+                ).returncode
+                == 0
+            )
 
             args = ["git", "revert", "--no-commit", "--no-edit"]
             if is_merge:
                 args += ["-m", "1"]
             args.append(c)
             result = subprocess.run(
-                args, capture_output=True, text=True, timeout=30, cwd=self.repo_path,
+                args,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self.repo_path,
             )
 
         if result.returncode == 0:
             diff = subprocess.run(
                 ["git", "diff", "--stat", "--cached"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             files_result = subprocess.run(
                 ["git", "diff", "--name-only", "--cached"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             files = [f for f in files_result.stdout.strip().split("\n") if f]
             # Abort the dry-run
             subprocess.run(
                 ["git", "revert", "--abort"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             return RevertPreview(
-                ok=True, can_revert=True,
-                files=files, diff_summary=diff.stdout.strip(),
+                ok=True,
+                can_revert=True,
+                files=files,
+                diff_summary=diff.stdout.strip(),
             )
         else:
             conflicts = []
@@ -500,11 +602,16 @@ class GitVCS(VCS):
                     conflicts.append(line.strip())
             subprocess.run(
                 ["git", "revert", "--abort"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             return RevertPreview(
-                ok=True, can_revert=False,
-                files=[], conflicts=conflicts,
+                ok=True,
+                can_revert=False,
+                files=[],
+                conflicts=conflicts,
                 error="回滚存在冲突，无法自动完成",
             )
 
@@ -514,9 +621,18 @@ class GitVCS(VCS):
 
         # Get live-edit commits in the range
         rev_result = subprocess.run(
-            ["git", "rev-list", "--reverse", f"{commit_hash}..HEAD",
-             "--grep=live-edit:", "--grep=dev-mode:"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            [
+                "git",
+                "rev-list",
+                "--reverse",
+                f"{commit_hash}..HEAD",
+                "--grep=live-edit:",
+                "--grep=dev-mode:",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         target_commits = [c for c in rev_result.stdout.strip().split("\n") if c]
 
@@ -526,44 +642,65 @@ class GitVCS(VCS):
         # Revert each commit individually
         last_error = ""
         for c in target_commits:
-            is_merge = subprocess.run(
-                ["git", "rev-list", "--merges", "-1", c],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
-            ).returncode == 0
+            is_merge = (
+                subprocess.run(
+                    ["git", "rev-list", "--merges", "-1", c],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=self.repo_path,
+                ).returncode
+                == 0
+            )
 
             args = ["git", "revert", "--no-commit"]
             if is_merge:
                 args += ["-m", "1"]
             args.append(c)
             result = subprocess.run(
-                args, capture_output=True, text=True, timeout=30, cwd=self.repo_path,
+                args,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self.repo_path,
             )
             if result.returncode != 0:
                 last_error = result.stderr[:1000]
                 subprocess.run(
                     ["git", "revert", "--abort"],
-                    capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=self.repo_path,
                 )
                 return RevertResult(ok=False, error=f"回滚失败:\n{last_error}")
 
         subprocess.run(
             ["git", "commit", "-m", f"live-edit: Revert to {commit_hash}"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
 
         hash_result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
         )
         new_hash = hash_result.stdout.strip()
-        return RevertResult(ok=True, new_commit_hash=new_hash,
-                           message=f"已回滚到 {commit_hash}")
+        return RevertResult(ok=True, new_commit_hash=new_hash, message=f"已回滚到 {commit_hash}")
 
     def show_commit(self, commit_hash: str) -> dict:
         try:
             result = subprocess.run(
                 ["git", "show", "--stat", "--patch", commit_hash],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             return {"ok": True, "diff": result.stdout.strip()}
         except Exception as e:
@@ -573,11 +710,20 @@ class GitVCS(VCS):
         """Return recent live-edit merge commits (--first-parent skips worktree internals)."""
         try:
             result = subprocess.run(
-                ["git", "log", "--first-parent", "--oneline",
-                 "--grep=live-edit:", "--grep=dev-mode:",
-                 "--format=%h|%s|%ai",
-                 f"-n{limit}"],
-                capture_output=True, text=True, timeout=10, cwd=self.repo_path,
+                [
+                    "git",
+                    "log",
+                    "--first-parent",
+                    "--oneline",
+                    "--grep=live-edit:",
+                    "--grep=dev-mode:",
+                    "--format=%h|%s|%ai",
+                    f"-n{limit}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=self.repo_path,
             )
             commits = []
             for line in result.stdout.strip().split("\n"):
@@ -586,11 +732,13 @@ class GitVCS(VCS):
                 parts = line.split("|", 2)
                 if len(parts) < 3:
                     continue
-                commits.append({
-                    "commit_hash": parts[0],
-                    "message": parts[1],
-                    "date": parts[2],
-                })
+                commits.append(
+                    {
+                        "commit_hash": parts[0],
+                        "message": parts[1],
+                        "date": parts[2],
+                    }
+                )
             return commits
         except Exception as e:
             logger.warning("log_live_edit_commits error: %s", e)

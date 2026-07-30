@@ -7,7 +7,34 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Run ruff check
+        run: ruff check .
+
+      - name: Run ruff format check
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy live_edit/
+
   test:
+    needs: [lint]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -28,5 +55,5 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install ".[dev]"
 
-      - name: Run tests
-        run: python3 -m pytest tests/ -v
+      - name: Run tests with coverage
+        run: python3 -m pytest tests/ -v --cov --cov-report=term --cov-fail-under=60

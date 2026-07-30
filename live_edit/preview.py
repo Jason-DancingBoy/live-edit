@@ -47,7 +47,7 @@ class PortAllocator:
                 s.settimeout(0.5)
                 s.connect(("127.0.0.1", port))
                 return False
-        except (ConnectionRefusedError, socket.timeout, OSError):
+        except (TimeoutError, ConnectionRefusedError, OSError):
             return True
 
 
@@ -71,11 +71,14 @@ class PreviewManager:
         if session_id in self._public_urls:
             return self._public_urls[session_id]
 
-        port = self._allocator.allocate(
-            self._config.port_start, self._config.port_end)
+        port = self._allocator.allocate(self._config.port_start, self._config.port_end)
         if port is None:
-            logger.warning("Preview: no available port in range %d-%d for session %s",
-                           self._config.port_start, self._config.port_end, session_id)
+            logger.warning(
+                "Preview: no available port in range %d-%d for session %s",
+                self._config.port_start,
+                self._config.port_end,
+                session_id,
+            )
             return None
 
         self._ensure_symlink()
@@ -110,12 +113,17 @@ class PreviewManager:
             if proc.returncode is not None:
                 stderr_text = ""
                 try:
-                    stderr_bytes = await proc.stderr.read()
-                    stderr_text = stderr_bytes.decode("utf-8", errors="replace")[-500:]
+                    if proc.stderr is not None:
+                        stderr_bytes = await proc.stderr.read()
+                        stderr_text = stderr_bytes.decode("utf-8", errors="replace")[-500:]
                 except Exception:
                     pass
-                logger.warning("Preview [%s]: process exited early (code=%d). stderr: %s",
-                               session_id, proc.returncode, stderr_text or "(empty)")
+                logger.warning(
+                    "Preview [%s]: process exited early (code=%d). stderr: %s",
+                    session_id,
+                    proc.returncode,
+                    stderr_text or "(empty)",
+                )
                 await self.stop(session_id)
                 return None
             try:
@@ -128,14 +136,22 @@ class PreviewManager:
                         if self._config.base_url:
                             public_url = f"{self._config.base_url}/live-edit/p/{session_id}"
                         self._public_urls[session_id] = public_url
-                        logger.info("Preview [%s]: ready at %s (proxy: %s)", session_id, url, public_url)
+                        logger.info(
+                            "Preview [%s]: ready at %s (proxy: %s)",
+                            session_id,
+                            url,
+                            public_url,
+                        )
                         return public_url
             except Exception:
                 pass
             await asyncio.sleep(0.5)
 
-        logger.warning("Preview [%s]: health check timed out after %ds",
-                       session_id, self._config.startup_timeout)
+        logger.warning(
+            "Preview [%s]: health check timed out after %ds",
+            session_id,
+            self._config.startup_timeout,
+        )
         await self.stop(session_id)
         return None
 

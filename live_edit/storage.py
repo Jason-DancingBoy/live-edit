@@ -1,7 +1,6 @@
 """Storage interface and default SQLite implementation for session persistence."""
 
 import json
-import os
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
@@ -12,23 +11,26 @@ class Storage(ABC):
 
     @abstractmethod
     def save_session(
-        self, session_id: str, request: str, committed: bool,
-        files: list[str], commit_hash: str, messages_json: str,
+        self,
+        session_id: str,
+        request: str,
+        committed: bool,
+        files: list[str],
+        commit_hash: str,
+        messages_json: str,
         mode: str,
+    ) -> None: ...
+
+    @abstractmethod
+    def get_sessions(self, limit: int = 30) -> list[dict]: ...
+
+    @abstractmethod
+    def get_session_detail(self, session_id: str) -> dict | None: ...
+
+    @abstractmethod
+    def store_embedding(
+        self, session_id: str, request: str, files_json: str, embedding: bytes
     ) -> None:
-        ...
-
-    @abstractmethod
-    def get_sessions(self, limit: int = 30) -> list[dict]:
-        ...
-
-    @abstractmethod
-    def get_session_detail(self, session_id: str) -> dict | None:
-        ...
-
-    @abstractmethod
-    def store_embedding(self, session_id: str, request: str,
-                        files_json: str, embedding: bytes) -> None:
         """Store a session embedding for later retrieval."""
 
     @abstractmethod
@@ -53,7 +55,7 @@ class SQLiteStorage(Storage):
             self._local.conn = sqlite3.connect(self.db_path)
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
-        return self._local.conn
+        return self._local.conn  # type: ignore[no-any-return]
 
     def _init_db(self):
         conn = self._get_conn()
@@ -103,8 +105,13 @@ class SQLiteStorage(Storage):
         conn.commit()
 
     def save_session(
-        self, session_id: str, request: str, committed: bool,
-        files: list[str], commit_hash: str, messages_json: str,
+        self,
+        session_id: str,
+        request: str,
+        committed: bool,
+        files: list[str],
+        commit_hash: str,
+        messages_json: str,
         mode: str,
     ) -> None:
         conn = self._get_conn()
@@ -113,14 +120,18 @@ class SQLiteStorage(Storage):
                (session_id, request, committed, files, commit_hash, messages, mode, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
             (
-                session_id, request, int(committed),
+                session_id,
+                request,
+                int(committed),
                 json.dumps(files, ensure_ascii=False),
-                commit_hash, messages_json, mode,
+                commit_hash,
+                messages_json,
+                mode,
             ),
         )
         conn.commit()
 
-    def _parse_json_fields(self, detail: dict) -> dict:
+    def _parse_json_fields(self, detail: dict) -> None:
         """Parse JSON string fields (messages, files) into Python objects.
 
         Handles both JSON arrays and legacy comma-separated strings.
@@ -162,8 +173,9 @@ class SQLiteStorage(Storage):
         self._parse_json_fields(detail)
         return detail
 
-    def store_embedding(self, session_id: str, request: str,
-                        files_json: str, embedding: bytes) -> None:
+    def store_embedding(
+        self, session_id: str, request: str, files_json: str, embedding: bytes
+    ) -> None:
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO session_embeddings
@@ -194,8 +206,7 @@ class SQLiteStorage(Storage):
         )
         conn.commit()
 
-    def store_chunks(self, session_id: str, commit_hash: str,
-                     chunks: list[dict]) -> None:
+    def store_chunks(self, session_id: str, commit_hash: str, chunks: list[dict]) -> None:
         """Transactionally replace all chunks for a session.
 
         Each chunk dict: {'chunk_type', 'chunk_text', 'payload_json',
@@ -218,9 +229,12 @@ class SQLiteStorage(Storage):
                         payload_json, file_path, embedding)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        session_id, commit_hash,
-                        c["chunk_type"], c["chunk_text"],
-                        c["payload_json"], c.get("file_path", ""),
+                        session_id,
+                        commit_hash,
+                        c["chunk_type"],
+                        c["chunk_text"],
+                        c["payload_json"],
+                        c.get("file_path", ""),
                         c["embedding_bytes"],
                     ),
                 )
@@ -282,7 +296,7 @@ class SQLiteStorage(Storage):
 
     def get_db_version(self) -> int:
         conn = self._get_conn()
-        return conn.execute("PRAGMA user_version").fetchone()[0]
+        return conn.execute("PRAGMA user_version").fetchone()[0]  # type: ignore[no-any-return]
 
     def set_db_version(self, version: int) -> None:
         conn = self._get_conn()

@@ -1,8 +1,9 @@
 """Tests for live_edit.provider — Provider interface and default implementation."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from live_edit.provider import AnthropicCompatibleProvider
 
@@ -37,9 +38,27 @@ class TestAnthropicCompatibleProvider:
     @pytest.mark.asyncio
     async def test_simple_text_response(self):
         events = [
-            json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}}),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Hello"},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": " world"},
+                }
+            ),  # noqa: E501
             json.dumps({"type": "content_block_stop", "index": 0}),
         ]
 
@@ -66,10 +85,34 @@ class TestAnthropicCompatibleProvider:
     @pytest.mark.asyncio
     async def test_tool_use_parsing(self):
         events = [
-            json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "name": "read_file", "id": "tool_1"}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"path":'}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '"src/main.py"'}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "}"}}),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "name": "read_file", "id": "tool_1"},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"path":'},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": '"src/main.py"'},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": "}"},
+                }
+            ),  # noqa: E501
             json.dumps({"type": "content_block_stop", "index": 0}),
         ]
 
@@ -94,9 +137,27 @@ class TestAnthropicCompatibleProvider:
     @pytest.mark.asyncio
     async def test_thinking_events(self):
         events = [
-            json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me think..."}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": " about this."}}),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "Let me think..."},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": " about this."},
+                }
+            ),  # noqa: E501
             json.dumps({"type": "content_block_stop", "index": 0}),
         ]
 
@@ -122,11 +183,35 @@ class TestAnthropicCompatibleProvider:
     @pytest.mark.asyncio
     async def test_mixed_text_and_tool(self):
         events = [
-            json.dumps({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
-            json.dumps({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Let me read"}}),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "Let me read"},
+                }
+            ),  # noqa: E501
             json.dumps({"type": "content_block_stop", "index": 0}),
-            json.dumps({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "name": "read_file", "id": "t1"}}),
-            json.dumps({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"path":"f.py"}'}}),
+            json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "tool_use", "name": "read_file", "id": "t1"},
+                }
+            ),  # noqa: E501
+            json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"path":"f.py"}'},
+                }
+            ),  # noqa: E501
             json.dumps({"type": "content_block_stop", "index": 1}),
         ]
 

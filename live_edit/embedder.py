@@ -45,10 +45,10 @@ class LocalEmbedder(Embedder):
         with self._lock:
             if self._model is not None:
                 return
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
 
             self._model = SentenceTransformer(self._model_name)
-            self._dimension = self._model.get_sentence_embedding_dimension()
+            self._dimension = self._model.get_sentence_embedding_dimension()  # type: ignore[attr-defined]
             logger.info(
                 "LocalEmbedder loaded model=%s dim=%d",
                 self._model_name,
@@ -57,13 +57,13 @@ class LocalEmbedder(Embedder):
 
     def embed(self, text: str) -> list[float]:
         self._ensure_loaded()
-        vec = self._model.encode(text)
-        return vec.tolist()
+        vec = self._model.encode(text)  # type: ignore[attr-defined]
+        return vec.tolist()  # type: ignore[no-any-return]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self._ensure_loaded()
-        vecs = self._model.encode(texts)
-        return vecs.tolist()
+        vecs = self._model.encode(texts)  # type: ignore[attr-defined]
+        return vecs.tolist()  # type: ignore[no-any-return]
 
     @property
     def dimension(self) -> int:

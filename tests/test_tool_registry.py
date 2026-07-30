@@ -1,7 +1,8 @@
 """Tests for tool_registry.py"""
 
 import pytest
-from live_edit.tool_registry import ToolDef, DefaultToolRegistry
+
+from live_edit.tool_registry import DefaultToolRegistry, ToolDef
 
 
 async def _echo(args, project_root, config=None):
@@ -10,9 +11,12 @@ async def _echo(args, project_root, config=None):
 
 def test_register_and_get_tool():
     registry = DefaultToolRegistry()
-    td = ToolDef(name="test", description="A test tool",
-                 input_schema={"type": "object", "properties": {}},
-                 execute=_echo)
+    td = ToolDef(
+        name="test",
+        description="A test tool",
+        input_schema={"type": "object", "properties": {}},
+        execute=_echo,
+    )
     registry.register(td)
     assert registry.get_tool("test") is td
     assert registry.get_tool("nonexistent") is None
@@ -20,9 +24,12 @@ def test_register_and_get_tool():
 
 def test_get_tools_returns_anthropic_schemas():
     registry = DefaultToolRegistry()
-    td = ToolDef(name="test", description="Desc",
-                 input_schema={"type": "object", "properties": {}},
-                 execute=_echo)
+    td = ToolDef(
+        name="test",
+        description="Desc",
+        input_schema={"type": "object", "properties": {}},
+        execute=_echo,
+    )
     registry.register(td)
     schemas = registry.get_tools("quick")
     assert len(schemas) == 1
@@ -32,10 +39,10 @@ def test_get_tools_returns_anthropic_schemas():
 
 def test_mode_filtering():
     registry = DefaultToolRegistry()
-    deep_only = ToolDef(name="deep_tool", description="",
-                        input_schema={}, execute=_echo, modes=["deep"])
-    all_modes = ToolDef(name="any_tool", description="",
-                        input_schema={}, execute=_echo, modes=None)
+    deep_only = ToolDef(
+        name="deep_tool", description="", input_schema={}, execute=_echo, modes=["deep"]
+    )
+    all_modes = ToolDef(name="any_tool", description="", input_schema={}, execute=_echo, modes=None)
     registry.register(deep_only)
     registry.register(all_modes)
 
@@ -50,10 +57,8 @@ def test_mode_filtering():
 
 def test_priority_override():
     registry = DefaultToolRegistry()
-    low = ToolDef(name="same", description="low", input_schema={},
-                  execute=_echo, priority=10)
-    high = ToolDef(name="same", description="high", input_schema={},
-                   execute=_echo, priority=20)
+    low = ToolDef(name="same", description="low", input_schema={}, execute=_echo, priority=10)
+    high = ToolDef(name="same", description="high", input_schema={}, execute=_echo, priority=20)
     registry.register(low)
     registry.register(high)
     assert registry.get_tool("same").description == "high"
@@ -61,12 +66,17 @@ def test_priority_override():
 
 def test_get_write_tool_names():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="read", description="", input_schema={},
-                               execute=_echo, is_write=False))
-    registry.register(ToolDef(name="write", description="", input_schema={},
-                               execute=_echo, is_write=True))
-    registry.register(ToolDef(name="approve", description="", input_schema={},
-                               execute=_echo, require_approval=True))
+    registry.register(
+        ToolDef(name="read", description="", input_schema={}, execute=_echo, is_write=False)
+    )
+    registry.register(
+        ToolDef(name="write", description="", input_schema={}, execute=_echo, is_write=True)
+    )
+    registry.register(
+        ToolDef(
+            name="approve", description="", input_schema={}, execute=_echo, require_approval=True
+        )
+    )
     names = registry.get_write_tool_names("quick")
     assert "write" in names
     assert "approve" in names
@@ -76,8 +86,7 @@ def test_get_write_tool_names():
 @pytest.mark.asyncio
 async def test_execute_tool():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="echo", description="", input_schema={},
-                               execute=_echo))
+    registry.register(ToolDef(name="echo", description="", input_schema={}, execute=_echo))
     result = await registry.execute("echo", {"msg": "hello"}, "/tmp", None)
     assert result["ok"] is True
     assert result["echo"] == "hello"
@@ -92,17 +101,18 @@ async def test_execute_unknown_tool():
 
 def test_list_tools():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="a", description="", input_schema={},
-                               execute=_echo, modes=None))
-    registry.register(ToolDef(name="b", description="", input_schema={},
-                               execute=_echo, modes=["deep"]))
+    registry.register(ToolDef(name="a", description="", input_schema={}, execute=_echo, modes=None))
+    registry.register(
+        ToolDef(name="b", description="", input_schema={}, execute=_echo, modes=["deep"])
+    )
     assert registry.list_tools() == ["a", "b"]
     assert registry.list_tools("quick") == ["a"]
 
 
 def test_to_anthropic_schema():
     td = ToolDef(
-        name="test", description="A test",
+        name="test",
+        description="A test",
         input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
         execute=_echo,
     )

@@ -2,13 +2,13 @@
 
 import sys
 import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 np = pytest.importorskip("numpy", reason="numpy required (install live-edit[rag])")
-from unittest.mock import MagicMock, patch
 
-from live_edit.embedder import Embedder, LocalEmbedder
+from live_edit.embedder import Embedder, LocalEmbedder  # noqa: E402
 
 
 class TestEmbedderABC:
@@ -19,6 +19,7 @@ class TestEmbedderABC:
     def test_concrete_subclass_must_implement_embed_and_dimension(self):
         class Incomplete(Embedder):
             pass
+
         with pytest.raises(TypeError):
             Incomplete()
 
@@ -61,9 +62,7 @@ class TestLocalEmbedder:
     def mock_sentence_transformer(self):
         with patch("sentence_transformers.SentenceTransformer") as mock_st:
             mock_model = MagicMock()
-            mock_model.encode.return_value = np.array(
-                [0.1, 0.2, 0.3], dtype=np.float32
-            )
+            mock_model.encode.return_value = np.array([0.1, 0.2, 0.3], dtype=np.float32)
             mock_st.return_value = mock_model
             yield mock_st, mock_model
 
@@ -76,18 +75,14 @@ class TestLocalEmbedder:
     def test_embed_returns_list_of_floats(self, mock_sentence_transformer):
         mock_st, mock_model = mock_sentence_transformer
         mock_model.get_sentence_embedding_dimension.return_value = 384
-        mock_model.encode.return_value = np.array(
-            [0.1, 0.2, 0.3], dtype=np.float32
-        )
+        mock_model.encode.return_value = np.array([0.1, 0.2, 0.3], dtype=np.float32)
         e = LocalEmbedder(model_name="test-model")
         result = e.embed("hello world")
         assert isinstance(result, list)
         assert len(result) == 3
         assert all(isinstance(v, float) for v in result)
 
-    def test_lazy_loading_loads_model_on_first_call(
-        self, mock_sentence_transformer
-    ):
+    def test_lazy_loading_loads_model_on_first_call(self, mock_sentence_transformer):
         mock_st, mock_model = mock_sentence_transformer
         mock_model.get_sentence_embedding_dimension.return_value = 384
         mock_model.encode.return_value = np.array([0.1, 0.2], dtype=np.float32)
@@ -137,9 +132,7 @@ class TestLocalEmbedder:
     def test_embed_batch_uses_native_batch(self, mock_sentence_transformer):
         mock_st, mock_model = mock_sentence_transformer
         mock_model.get_sentence_embedding_dimension.return_value = 384
-        mock_model.encode.return_value = np.array(
-            [[0.1], [0.2]], dtype=np.float32
-        )
+        mock_model.encode.return_value = np.array([[0.1], [0.2]], dtype=np.float32)
         e = LocalEmbedder(model_name="test-model")
         results = e.embed_batch(["text1", "text2"])
         assert len(results) == 2

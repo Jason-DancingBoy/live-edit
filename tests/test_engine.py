@@ -1,29 +1,34 @@
 """Tests for live_edit.engine — EditSession, agent loop, timeline, error translation."""
 
 import asyncio
-import json
 import os
 import subprocess
-import time
 from pathlib import Path
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from live_edit.config import (
+    Config,
+    ErrorTranslations,
+    HooksConfig,
+    LLMConfig,
+    ModeConfig,
+    ModePromptConfig,
+    ProjectConfig,
+    SafetyConfig,
+    SessionsConfig,
+    TimeoutsConfig,
+    UIConfig,
+)
 from live_edit.engine import (
     EditSession,
     SessionStore,
-    translate_error,
     build_timeline,
-    run_edit_session,
     continue_edit_session,
+    run_edit_session,
+    translate_error,
 )
-from live_edit.config import (
-    Config, ModeConfig, ModePromptConfig, ProjectConfig, LLMConfig,
-    SafetyConfig, TimeoutsConfig, SessionsConfig, HooksConfig, UIConfig,
-    ErrorTranslations,
-)
-from live_edit.vcs import RevertPreview, RevertResult
-
 
 # ── translate_error ──
 
@@ -61,9 +66,15 @@ class TestBuildTimeline:
         ]
         mock_storage = MagicMock()
         mock_storage.get_sessions.return_value = [
-            {"session_id": "s1", "request": "Make it red", "committed": 0,
-             "commit_hash": "", "files": '["a.py"]', "created_at": "2026-01-02",
-             "mode": "quick"},
+            {
+                "session_id": "s1",
+                "request": "Make it red",
+                "committed": 0,
+                "commit_hash": "",
+                "files": '["a.py"]',
+                "created_at": "2026-01-02",
+                "mode": "quick",
+            },
         ]
 
         timeline = build_timeline(mock_vcs, mock_storage, limit=30)
@@ -87,9 +98,15 @@ class TestBuildTimeline:
         mock_vcs.log_live_edit_commits.return_value = []
         mock_storage = MagicMock()
         mock_storage.get_sessions.return_value = [
-            {"session_id": "s1", "request": "Test", "committed": 0,
-             "commit_hash": "", "files": '["x.py"]', "created_at": "2026-01-01",
-             "mode": "quick"},
+            {
+                "session_id": "s1",
+                "request": "Test",
+                "committed": 0,
+                "commit_hash": "",
+                "files": '["x.py"]',
+                "created_at": "2026-01-01",
+                "mode": "quick",
+            },
         ]
 
         timeline = build_timeline(mock_vcs, mock_storage, limit=30)
@@ -216,9 +233,11 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_text_only_response(self):
         """Session with a provider that returns only text (no tools)."""
-        provider = FakeProvider([
-            [{"type": "text", "text": "I'll help with that."}],
-        ])
+        provider = FakeProvider(
+            [
+                [{"type": "text", "text": "I'll help with that."}],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_storage = MagicMock()
         mock_storage.save_session = MagicMock()
@@ -245,17 +264,28 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_tool_execution_read_file(self):
         """Session where the provider calls read_file."""
-        import tempfile, os
+        import os
+        import tempfile
+
         from live_edit.tool_registry import DefaultToolRegistry
+
         tmp = tempfile.mkdtemp()
         fpath = os.path.join(tmp, "test.py")
         with open(fpath, "w") as f:
             f.write("print('hello')")
 
-        provider = FakeProvider([
-            [{"type": "tool_use", "name": "read_file", "id": "t1",
-              "input": {"path": "test.py"}}],
-        ])
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "read_file",
+                        "id": "t1",
+                        "input": {"path": "test.py"},
+                    }
+                ],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_vcs.create_worktree.return_value = tmp
         mock_storage = MagicMock()
@@ -271,9 +301,14 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
-            session_store=store, tool_registry=registry,
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+            tool_registry=registry,
         )
 
         events = _drain_queue(session)
@@ -284,18 +319,32 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_tool_execution_edit_file(self):
         """Session where the provider edits a file (deep mode, auto-approve)."""
-        import tempfile, os
+        import os
+        import tempfile
+
         from live_edit.tool_registry import DefaultToolRegistry
+
         tmp = tempfile.mkdtemp()
         fpath = os.path.join(tmp, "edit_me.py")
         with open(fpath, "w") as f:
             f.write("original content")
 
-        provider = FakeProvider([
-            [{"type": "tool_use", "name": "edit_file", "id": "t1",
-              "input": {"path": "edit_me.py", "old_string": "original content",
-                        "new_string": "modified content"}}],
-        ])
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "edit_file",
+                        "id": "t1",
+                        "input": {
+                            "path": "edit_me.py",
+                            "old_string": "original content",
+                            "new_string": "modified content",
+                        },
+                    }
+                ],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_vcs.create_worktree.return_value = tmp
         mock_vcs.commit.return_value = "abc123"
@@ -312,9 +361,14 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
-            session_store=store, tool_registry=registry,
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+            tool_registry=registry,
         )
 
         with open(fpath) as f:
@@ -323,15 +377,25 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_tool_execution_write_file(self):
         """Session where the provider writes a new file."""
-        import tempfile, os
+        import os
+        import tempfile
+
         from live_edit.tool_registry import DefaultToolRegistry
 
         tmp = tempfile.mkdtemp()
 
-        provider = FakeProvider([
-            [{"type": "tool_use", "name": "write_file", "id": "t1",
-              "input": {"path": "new_file.py", "content": "print('new')"}}],
-        ])
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "write_file",
+                        "id": "t1",
+                        "input": {"path": "new_file.py", "content": "print('new')"},
+                    }
+                ],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_vcs.create_worktree.return_value = tmp
         mock_vcs.commit.return_value = "abc123"
@@ -348,9 +412,14 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
-            session_store=store, tool_registry=registry,
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+            tool_registry=registry,
         )
 
         assert os.path.exists(os.path.join(tmp, "new_file.py"))
@@ -358,10 +427,12 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_quick_mode_nudges_on_text_only(self):
         """In quick mode, if no edits made yet, text-only response triggers a nudge."""
-        provider = FakeProvider([
-            [{"type": "text", "text": "I think you should add a button."}],
-            [{"type": "text", "text": "OK, done."}],
-        ])
+        provider = FakeProvider(
+            [
+                [{"type": "text", "text": "I think you should add a button."}],
+                [{"type": "text", "text": "OK, done."}],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_storage = MagicMock()
 
@@ -372,8 +443,12 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="quick",
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
             session_store=store,
         )
 
@@ -382,9 +457,11 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_continue_session(self):
         """continue_edit_session runs the loop on an existing session."""
-        provider = FakeProvider([
-            [{"type": "text", "text": "Updated."}],
-        ])
+        provider = FakeProvider(
+            [
+                [{"type": "text", "text": "Updated."}],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_storage = MagicMock()
 
@@ -394,9 +471,13 @@ class TestRunEditSession:
         store.add(session)
 
         await continue_edit_session(
-            session=session, new_request="Change color",
-            provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="quick",
+            session=session,
+            new_request="Change color",
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
             session_store=store,
         )
 
@@ -405,9 +486,11 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_qa_mode_no_nudge(self):
         """In qa mode, text-only responses should NOT get the code-edit nudge."""
-        provider = FakeProvider([
-            [{"type": "text", "text": "This project uses FastAPI with SQLite."}],
-        ])
+        provider = FakeProvider(
+            [
+                [{"type": "text", "text": "This project uses FastAPI with SQLite."}],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_storage = MagicMock()
 
@@ -418,8 +501,12 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="qa",
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="qa",
             session_store=store,
         )
 
@@ -429,16 +516,26 @@ class TestRunEditSession:
     @pytest.mark.asyncio
     async def test_deep_mode_auto_approves_writes(self):
         """In deep mode, write tools are auto-approved (no approval wait)."""
-        import tempfile, os
+        import os
+        import tempfile
+
         tmp = tempfile.mkdtemp()
         fpath = os.path.join(tmp, "edit_me.py")
         with open(fpath, "w") as f:
             f.write("old")
 
-        provider = FakeProvider([
-            [{"type": "tool_use", "name": "edit_file", "id": "t1",
-              "input": {"path": "edit_me.py", "old_string": "old", "new_string": "new"}}],
-        ])
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "edit_file",
+                        "id": "t1",
+                        "input": {"path": "edit_me.py", "old_string": "old", "new_string": "new"},
+                    }
+                ],
+            ]
+        )
         mock_vcs = MagicMock()
         mock_vcs.commit.return_value = "abc"
         mock_storage = MagicMock()
@@ -451,8 +548,12 @@ class TestRunEditSession:
         store.add(session)
 
         await run_edit_session(
-            session=session, provider=provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
             session_store=store,
         )
 
@@ -549,6 +650,7 @@ def _drain_queue(session: EditSession) -> list[dict]:
 
 class _FakeSession:
     """Minimal session-like object for _do_commit testing."""
+
     def __init__(self, sid, wt_path, files):
         self.id = sid
         self.request = "test request"
@@ -570,15 +672,20 @@ class _FakeSession:
 
 class TestDoCommitBranchOnly:
     def test_commit_keeps_branch_does_not_merge(self, tmp_path):
-        from live_edit.vcs import GitVCS
-        from live_edit.engine import _do_commit
         from unittest.mock import MagicMock
+
+        from live_edit.engine import _do_commit
+        from live_edit.vcs import GitVCS
 
         # Build a real git repo
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=str(repo), capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(repo), capture_output=True)
+        subprocess.run(  # noqa: E501
+            ["git", "config", "user.email", "t@t.com"],
+            cwd=str(repo),
+            capture_output=True,
+        )
         subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True)
         (repo / "init.txt").write_text("init")
         subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
@@ -587,7 +694,10 @@ class TestDoCommitBranchOnly:
 
         vcs = GitVCS(repo)
         main_before = subprocess.run(
-            ["git", "rev-parse", "main"], cwd=str(repo), capture_output=True, text=True,
+            ["git", "rev-parse", "main"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         wt_path = vcs.create_worktree("sess-bonly")
@@ -599,18 +709,24 @@ class TestDoCommitBranchOnly:
         config.hooks = None
 
         import asyncio
+
         asyncio.run(_do_commit(session, vcs, storage, config))
 
         # main 未移动
         main_after = subprocess.run(
-            ["git", "rev-parse", "main"], cwd=str(repo), capture_output=True, text=True,
+            ["git", "rev-parse", "main"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert main_before == main_after
 
         # 分支存在
         branches = subprocess.run(
             ["git", "branch", "--list", "live-edit/sess-bonly"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         ).stdout
         assert "live-edit/sess-bonly" in branches
 
@@ -626,15 +742,18 @@ class TestDoCommitBranchOnly:
 
 class TestFormatMemoryContext:
     def test_default_template(self):
-        from live_edit.session_memory import MemoryEntry
         from live_edit.engine import _format_memory_context
+        from live_edit.session_memory import MemoryEntry
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Fix auth",
+                session_id="s1",
+                request="Fix auth",
                 file_path="auth.py",
                 diff_summary="+import jwt\n+def login():",
-                stat="+3/-1", commit_hash="abc", score=0.95,
+                stat="+3/-1",
+                commit_hash="abc",
+                score=0.95,
             ),
         ]
         result = _format_memory_context(memories)
@@ -644,15 +763,18 @@ class TestFormatMemoryContext:
         assert "95%" in result
 
     def test_custom_template(self):
-        from live_edit.session_memory import MemoryEntry
         from live_edit.engine import _format_memory_context
+        from live_edit.session_memory import MemoryEntry
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Fix auth",
+                session_id="s1",
+                request="Fix auth",
                 file_path="auth.py",
                 diff_summary="+import jwt",
-                stat="+3/-1", commit_hash="abc", score=0.95,
+                stat="+3/-1",
+                commit_hash="abc",
+                score=0.95,
             ),
         ]
         template = "[{index}] {request} {file} {stat} {score}"
@@ -660,14 +782,18 @@ class TestFormatMemoryContext:
         assert "[1] Fix auth auth.py +3/-1 95%" in result
 
     def test_empty_file_path_shows_request_only(self):
-        from live_edit.session_memory import MemoryEntry
         from live_edit.engine import _format_memory_context
+        from live_edit.session_memory import MemoryEntry
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Some query",
-                file_path="", diff_summary="", stat="",
-                commit_hash="", score=0.80,
+                session_id="s1",
+                request="Some query",
+                file_path="",
+                diff_summary="",
+                stat="",
+                commit_hash="",
+                score=0.80,
             ),
         ]
         result = _format_memory_context(memories)
@@ -675,6 +801,7 @@ class TestFormatMemoryContext:
 
     def test_empty_memories(self):
         from live_edit.engine import _format_memory_context
+
         result = _format_memory_context([])
         assert "Relevant" in result
         assert "Use the above" in result
@@ -686,9 +813,10 @@ class TestSessionMemoryEngineIntegration:
     @pytest.mark.asyncio
     async def test_session_memory_disabled_by_default(self):
         """When session_memory is disabled, no memory injection or errors."""
-        from live_edit.engine import run_edit_session, EditSession
+        from unittest.mock import MagicMock
+
         from live_edit.config import Config
-        from unittest.mock import AsyncMock, MagicMock
+        from live_edit.engine import EditSession, run_edit_session
 
         config = Config()
         session = EditSession("test-s1", "Make it red")
@@ -705,8 +833,12 @@ class TestSessionMemoryEngineIntegration:
         ]
 
         await run_edit_session(
-            session=session, provider=mock_provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
+            session=session,
+            provider=mock_provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
             tool_registry=mock_registry,
         )
         # Should complete without errors
@@ -715,9 +847,10 @@ class TestSessionMemoryEngineIntegration:
     @pytest.mark.asyncio
     async def test_missing_rag_dependency_logs_warning(self):
         """When rag dep is missing, engine should warn but not crash."""
-        from live_edit.engine import run_edit_session, EditSession
+        from unittest.mock import MagicMock
+
         from live_edit.config import Config
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from live_edit.engine import EditSession, run_edit_session
 
         config = Config()
         config.session_memory.enabled = True
@@ -737,8 +870,12 @@ class TestSessionMemoryEngineIntegration:
 
         with patch("live_edit.embedder.LocalEmbedder", side_effect=ImportError("No module")):
             await run_edit_session(
-                session=session, provider=mock_provider, vcs=mock_vcs,
-                storage=mock_storage, config=config, mode="deep",
+                session=session,
+                provider=mock_provider,
+                vcs=mock_vcs,
+                storage=mock_storage,
+                config=config,
+                mode="deep",
                 tool_registry=mock_registry,
             )
         # Should complete without raising

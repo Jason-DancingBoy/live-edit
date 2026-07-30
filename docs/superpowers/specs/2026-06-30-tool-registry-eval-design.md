@@ -78,9 +78,11 @@ A project creates `live_edit_tools/` directory at project root. Files inside are
 # live_edit_tools/db_tools.py
 from live_edit.tool_registry import tool
 
+
 @tool(name="db_schema", description="查看数据库表结构", modes=["deep", "qa"])
 async def db_schema(args, project_root, config):
     import subprocess
+
     result = subprocess.run(["python", "manage.py", "inspectdb"], ...)
     return {"ok": True, "tables": result.stdout}
 ```

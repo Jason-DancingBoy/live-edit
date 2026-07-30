@@ -342,6 +342,7 @@ Implement the `live_edit.Provider` abstract class:
 ```python
 from live_edit import Provider, setup_live_edit
 
+
 class MyProvider(Provider):
     async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
         # Call your LLM API of choice
@@ -349,6 +350,7 @@ class MyProvider(Provider):
         #   {"type": "text", "text": "..."}
         #   or {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
         ...
+
 
 app.include_router(setup_live_edit(provider=MyProvider()))
 ```
@@ -362,15 +364,16 @@ Implement the `live_edit.Storage` abstract class:
 ```python
 from live_edit import Storage
 
+
 class MyStorage(Storage):
-    def save_session(self, session_id, request, committed, files, commit_hash, messages_json, mode):
-        ...
+    def save_session(
+        self, session_id, request, committed, files, commit_hash, messages_json, mode
+    ): ...
 
-    def get_sessions(self, limit=30):
-        ...
+    def get_sessions(self, limit=30): ...
 
-    def get_session_detail(self, session_id):
-        ...
+    def get_session_detail(self, session_id): ...
+
 
 app.include_router(setup_live_edit(storage=MyStorage()))
 ```
@@ -384,27 +387,22 @@ Implement the `live_edit.VCS` abstract class:
 ```python
 from live_edit import VCS, RevertPreview, RevertResult
 
+
 class MyVCS(VCS):
-    def commit(self, files, message) -> str:
-        ...
+    def commit(self, files, message) -> str: ...
 
-    def diff_stat(self, files) -> str:
-        ...
+    def diff_stat(self, files) -> str: ...
 
-    def diff_full(self, files) -> str:
-        ...
+    def diff_full(self, files) -> str: ...
 
-    def revert_preview(self, commit_hash) -> RevertPreview:
-        ...
+    def revert_preview(self, commit_hash) -> RevertPreview: ...
 
-    def revert_execute(self, commit_hash) -> RevertResult:
-        ...
+    def revert_execute(self, commit_hash) -> RevertResult: ...
 
-    def show_commit(self, commit_hash) -> dict:
-        ...
+    def show_commit(self, commit_hash) -> dict: ...
 
-    def log_live_edit_commits(self, limit=30) -> list:
-        ...
+    def log_live_edit_commits(self, limit=30) -> list: ...
+
 
 app.include_router(setup_live_edit(vcs=MyVCS()))
 ```
@@ -500,33 +498,27 @@ Use `POST /continue/{session_id}` to append new requests to the same session, pr
 from live_edit import (
     # Router setup
     setup_live_edit,
-
     # Provider
     Provider,
     AnthropicCompatibleProvider,
-
     # Storage
     Storage,
     SQLiteStorage,
-
     # VCS
     VCS,
     GitVCS,
     RevertPreview,
     RevertResult,
-
     # Config
     Config,
     parse_config,
     validate_config,
     detect_project,
-
     # Engine
     EditSession,
     SessionStore,
     build_timeline,
     translate_error,
-
     # Preview
     PreviewManager,
 )

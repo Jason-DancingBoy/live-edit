@@ -9,21 +9,20 @@ Custom implementations:
     app.include_router(setup_live_edit(provider=MyProvider(), storage=MyStorage()))
 """
 
+from .config import Config, detect_project, parse_config, validate_config
+from .engine import EditSession, SessionStore, build_timeline, translate_error
+from .preview import PreviewManager
+from .provider import AnthropicCompatibleProvider, Provider
+from .storage import SQLiteStorage, Storage
+from .vcs import VCS, GitVCS, RevertPreview, RevertResult
+
 
 def setup_live_edit(*args, **kwargs):
     """Lazy import to avoid circular deps during development."""
     from .router import setup_live_edit as _setup
+
     return _setup(*args, **kwargs)
 
-
-# ── Public interfaces (for custom implementations) ──
-
-from .provider import Provider, AnthropicCompatibleProvider
-from .storage import Storage, SQLiteStorage
-from .vcs import VCS, GitVCS, RevertPreview, RevertResult
-from .config import Config, parse_config, validate_config, detect_project
-from .engine import EditSession, SessionStore, build_timeline, translate_error
-from .preview import PreviewManager
 
 __all__ = [
     # Setup

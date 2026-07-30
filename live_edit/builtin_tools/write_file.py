@@ -2,17 +2,17 @@
 
 import os
 
+from ..safety import check_write_allowed, safe_path
 from ..tool_registry import ToolDef
-from ..safety import safe_path, check_write_allowed
 
 
 async def execute(args: dict, project_root: str, config=None) -> dict:
     path = safe_path(args["path"], project_root)
     overwrite_dirs = None
     allow_overwrite = False
-    if config and hasattr(config, 'safety'):
-        overwrite_dirs = getattr(config.safety, 'overwrite_allowed_dirs', None)
-        allow_overwrite = getattr(config.safety, 'allow_overwrite_existing', False)
+    if config and hasattr(config, "safety"):
+        overwrite_dirs = getattr(config.safety, "overwrite_allowed_dirs", None)
+        allow_overwrite = getattr(config.safety, "allow_overwrite_existing", False)
     err = check_write_allowed(args["path"], project_root, allow_overwrite, overwrite_dirs)
     if err:
         return {"ok": False, "error": err}

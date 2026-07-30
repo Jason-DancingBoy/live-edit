@@ -2,8 +2,8 @@
 
 import os
 
-from ..tool_registry import ToolDef
 from ..safety import safe_path
+from ..tool_registry import ToolDef
 
 
 async def execute(args: dict, project_root: str, config=None) -> dict:
@@ -20,19 +20,25 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
                     size = entry.stat().st_size if entry.is_file() else 0
                 except OSError:
                     size = 0
-                entries.append({
-                    "name": entry.name,
-                    "is_dir": entry.is_dir(),
-                    "size_bytes": size if entry.is_file() else 0,
-                })
+                entries.append(
+                    {
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size_bytes": size if entry.is_file() else 0,
+                    }
+                )
                 if entry.is_dir():
                     total_dirs += 1
                 else:
                     total_files += 1
-        entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-        return {"ok": True, "path": args.get("path", "."),
-                "entries": entries[:100], "total_files": total_files,
-                "total_dirs": total_dirs}
+        entries.sort(key=lambda e: (not e["is_dir"], str(e["name"]).lower()))
+        return {
+            "ok": True,
+            "path": args.get("path", "."),
+            "entries": entries[:100],
+            "total_files": total_files,
+            "total_dirs": total_dirs,
+        }
     except PermissionError:
         return {"ok": False, "error": "无权限访问该目录"}
 
@@ -44,7 +50,10 @@ def create() -> ToolDef:
         input_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的路径，默认为项目根目录"},
+                "path": {
+                    "type": "string",
+                    "description": "相对于项目根目录的路径，默认为项目根目录",
+                },
             },
             "required": [],
         },

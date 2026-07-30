@@ -75,6 +75,7 @@ class MemoryEntry:
     commit_hash: str
     score: float
 
+
 class SessionMemory:
     def __init__(self, storage: Storage, embedder: Embedder, config: SessionMemoryConfig): ...
 
@@ -120,8 +121,9 @@ class Storage(ABC):
     # ... existing methods ...
 
     @abstractmethod
-    async def store_embedding(self, session_id: str, request: str,
-                              files_json: str, embedding: bytes) -> None: ...
+    async def store_embedding(
+        self, session_id: str, request: str, files_json: str, embedding: bytes
+    ) -> None: ...
 
     @abstractmethod
     async def query_embeddings(self) -> list[tuple[str, str, str, bytes]]:
@@ -179,6 +181,7 @@ class EmbedderConfig:
     api_url: str = ""
     api_key_env: str = ""
 
+
 @dataclass
 class SessionMemoryConfig:
     enabled: bool = False
@@ -198,7 +201,7 @@ if config.session_memory.enabled:
     await session_memory.store(
         session_id=session.id,
         request=request,
-        files=session._modified_files  # set before _do_commit is called
+        files=session._modified_files,  # set before _do_commit is called
     )
 ```
 

@@ -14,8 +14,7 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
             if m.is_file():
                 rel = str(m.relative_to(project_root))
                 files.append(rel)
-        return {"ok": True, "pattern": pattern, "files": files[:50],
-                "match_count": len(files)}
+        return {"ok": True, "pattern": pattern, "files": files[:50], "match_count": len(files)}
     except Exception as e:
         return {"ok": False, "error": f"glob 失败: {e}"}
 

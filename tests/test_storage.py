@@ -1,10 +1,12 @@
 """Tests for live_edit.storage — Storage interface and SQLiteStorage."""
 
-import json as _json
 import json
+import json as _json
 import struct
 import time
+
 import pytest
+
 from live_edit.storage import SQLiteStorage
 
 
@@ -16,9 +18,7 @@ class TestSQLiteStorage:
 
     def test_init_creates_tables(self, storage):
         conn = storage._get_conn()
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "live_edit_sessions" in table_names
 
@@ -107,9 +107,7 @@ class TestSessionEmbeddings:
 
     def test_init_creates_embeddings_table(self, storage):
         conn = storage._get_conn()
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "session_embeddings" in table_names
 
@@ -159,9 +157,7 @@ class TestSessionChunks:
 
     def test_init_creates_chunks_table(self, storage):
         conn = storage._get_conn()
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "session_chunks" in table_names
 
@@ -190,20 +186,24 @@ class TestSessionChunks:
 
     def test_store_replaces_existing_session(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
-        chunks1 = [{
-            "chunk_type": "request",
-            "chunk_text": "first",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
-        chunks2 = [{
-            "chunk_type": "request",
-            "chunk_text": "second",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
+        chunks1 = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "first",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
+        chunks2 = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "second",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
         storage.store_chunks("s1", "abc", chunks1)
         storage.store_chunks("s1", "def", chunks2)
         rows = storage.query_chunks()
@@ -212,34 +212,39 @@ class TestSessionChunks:
 
     def test_delete_session_chunks(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
-        chunks = [{
-            "chunk_type": "request",
-            "chunk_text": "test",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
+        chunks = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "test",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
         storage.store_chunks("s1", "abc", chunks)
         storage.delete_session_chunks("s1")
         assert storage.query_chunks() == []
 
     def test_delete_old_sessions_keeps_most_recent(self, storage):
         import time
+
         emb = struct.pack("4f", 0.0, 0.0, 0.0, 0.0)
         for i in range(5):
-            chunks = [{
-                "chunk_type": "request",
-                "chunk_text": f"req{i}",
-                "payload_json": "{}",
-                "file_path": "",
-                "embedding_bytes": emb,
-            }]
+            chunks = [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": f"req{i}",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ]
             storage.store_chunks(f"s{i}", "hash", chunks)
             time.sleep(1.1)  # ensure distinct created_at timestamps
 
         storage.delete_old_sessions(keep_count=3)
         rows = storage.query_chunks()
-        session_ids = set(r[1] for r in rows)  # session_id at index 1
+        session_ids = {r[1] for r in rows}  # session_id at index 1
         assert len(session_ids) == 3
         # Most recent sessions survive
         assert "s4" in session_ids
@@ -249,16 +254,22 @@ class TestSessionChunks:
         """If one INSERT fails, all DELETEs are rolled back."""
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
         # Pre-populate
-        storage.store_chunks("s1", "abc", [{
-            "chunk_type": "request",
-            "chunk_text": "original",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }])
+        storage.store_chunks(
+            "s1",
+            "abc",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "original",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ],
+        )
         # Try to store a chunk missing required key — should fail
         bad_chunks = [{"not_a_valid_chunk": True}]
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             storage.store_chunks("s1", "def", bad_chunks)
         # Original data should still be intact
         rows = storage.query_chunks()
@@ -275,13 +286,15 @@ class TestSessionChunks:
     def test_query_chunks_respects_limit(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
         for i in range(5):
-            chunks = [{
-                "chunk_type": "request",
-                "chunk_text": f"req{i}",
-                "payload_json": "{}",
-                "file_path": "",
-                "embedding_bytes": emb,
-            }]
+            chunks = [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": f"req{i}",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ]
             storage.store_chunks(f"s{i}", "hash", chunks)
         rows = storage.query_chunks(limit=3)
         assert len(rows) == 3

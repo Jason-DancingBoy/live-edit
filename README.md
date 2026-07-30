@@ -28,6 +28,7 @@ live-edit init
 
 ```python
 from live_edit import setup_live_edit
+
 app.include_router(setup_live_edit())
 ```
 
@@ -44,11 +45,13 @@ Swap any component — LLM provider, storage backend, version control:
 ```python
 from live_edit import Provider, Storage, VCS, setup_live_edit
 
-app.include_router(setup_live_edit(
-    provider=MyProvider(),
-    storage=MyStorage(),
-    vcs=MyVCS(),
-))
+app.include_router(
+    setup_live_edit(
+        provider=MyProvider(),
+        storage=MyStorage(),
+        vcs=MyVCS(),
+    )
+)
 ```
 
 ## Docs

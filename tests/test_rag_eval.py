@@ -13,15 +13,12 @@ asyncio.run(run_real_eval())
 """
 
 import asyncio
-import json
-import math
-import struct
 import tempfile
+
 import pytest
 
-from live_edit.session_memory import SessionMemory
 from live_edit.config import SessionMemoryConfig
-
+from live_edit.session_memory import SessionMemory
 
 # ---------------------------------------------------------------------------
 # Eval dataset
@@ -29,7 +26,8 @@ from live_edit.config import SessionMemoryConfig
 
 EVAL_SESSIONS = [
     (
-        "s1", "Add JWT authentication to login endpoint",
+        "s1",
+        "Add JWT authentication to login endpoint",
         ["src/auth.py", "src/middleware.py"],
         """\
 diff --git a/src/auth.py b/src/auth.py
@@ -69,7 +67,8 @@ index 111222..333444 100644
 """,
     ),
     (
-        "s2", "Fix null pointer crash in user profile page",
+        "s2",
+        "Fix null pointer crash in user profile page",
         ["src/components/UserProfile.tsx"],
         """\
 diff --git a/src/components/UserProfile.tsx b/src/components/UserProfile.tsx
@@ -92,7 +91,8 @@ index abc..def 100644
 """,
     ),
     (
-        "s3", "Refactor database connection pool for better throughput",
+        "s3",
+        "Refactor database connection pool for better throughput",
         ["src/db/pool.py"],
         """\
 diff --git a/src/db/pool.py b/src/db/pool.py
@@ -123,7 +123,8 @@ index 111..222 100644
 """,
     ),
     (
-        "s4", "Add CSS custom properties for dark mode theme",
+        "s4",
+        "Add CSS custom properties for dark mode theme",
         ["src/styles/theme.css"],
         """\
 diff --git a/src/styles/theme.css b/src/styles/theme.css
@@ -152,7 +153,8 @@ index aaa..bbb 100644
 """,
     ),
     (
-        "s5", "Update README with new API endpoint examples",
+        "s5",
+        "Update README with new API endpoint examples",
         ["README.md"],
         """\
 diff --git a/README.md b/README.md
@@ -180,7 +182,8 @@ index xxx..yyy 100644
 """,
     ),
     (
-        "s6", "Add rate limiting middleware for API routes",
+        "s6",
+        "Add rate limiting middleware for API routes",
         ["src/middleware/rate_limit.py"],
         """\
 diff --git a/src/middleware/rate_limit.py b/src/middleware/rate_limit.py
@@ -227,20 +230,20 @@ EVAL_QUERIES = [
 # ---------------------------------------------------------------------------
 
 TOPIC_VECTORS = {
-    "auth":      [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "bugfix":    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-    "db":        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-    "style":     [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-    "docs":      [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    "auth": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "bugfix": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    "db": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+    "style": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    "docs": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     "ratelimit": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
 }
 
 TOPIC_KEYWORDS = {
-    "auth":      ["auth", "jwt", "token", "login", "session cookie", "credential"],
-    "bugfix":    ["crash", "null pointer", "fix crash", "profile page", "user profile"],
-    "db":        ["database", "connection pool", "throughput", "db/pool"],
-    "style":     ["css", "dark mode", "dark theme", "theme.css", "style"],
-    "docs":      ["readme", "document", "api example", "README"],
+    "auth": ["auth", "jwt", "token", "login", "session cookie", "credential"],
+    "bugfix": ["crash", "null pointer", "fix crash", "profile page", "user profile"],
+    "db": ["database", "connection pool", "throughput", "db/pool"],
+    "style": ["css", "dark mode", "dark theme", "theme.css", "style"],
+    "docs": ["readme", "document", "api example", "README"],
     "ratelimit": ["rate limit", "throttle", "rate_limit"],
 }
 
@@ -249,9 +252,7 @@ DIM = 6
 
 def _topic(text: str) -> str:
     text_lower = text.lower()
-    for topic, keywords in sorted(
-        TOPIC_KEYWORDS.items(), key=lambda x: -max(len(k) for k in x[1])
-    ):
+    for topic, keywords in sorted(TOPIC_KEYWORDS.items(), key=lambda x: -max(len(k) for k in x[1])):
         for kw in keywords:
             if kw in text_lower:
                 return topic
@@ -277,6 +278,7 @@ class EvalFakeEmbedder:
 # Fake storage for eval
 # ---------------------------------------------------------------------------
 
+
 class EvalFakeStorage:
     def __init__(self):
         self._chunks = []
@@ -292,11 +294,18 @@ class EvalFakeStorage:
         results = []
         for i, c in enumerate(self._chunks[-limit:]):
             emb = c.get("embedding_bytes", b"")
-            results.append((
-                i, c.get("_sid", ""), c.get("_hash", ""),
-                c.get("chunk_type", ""), c.get("chunk_text", ""),
-                c.get("payload_json", "{}"), c.get("file_path", ""), emb,
-            ))
+            results.append(
+                (
+                    i,
+                    c.get("_sid", ""),
+                    c.get("_hash", ""),
+                    c.get("chunk_type", ""),
+                    c.get("chunk_text", ""),
+                    c.get("payload_json", "{}"),
+                    c.get("file_path", ""),
+                    emb,
+                )
+            )
         return results
 
     def delete_old_sessions(self, keep_count):
@@ -319,6 +328,7 @@ class EvalFakeStorage:
 # Eval runner
 # ---------------------------------------------------------------------------
 
+
 async def store_sessions(sm, sessions):
     for sid, request, files, diff in sessions:
         await sm.store(sid, request, files, diff, f"hash-{sid}")
@@ -340,7 +350,7 @@ def compute_metrics(query_results, k_values=(1, 3, 5)):
     metrics = {}
     for k in k_values:
         hits = 0
-        for query_text, result in query_results.items():
+        for _query_text, result in query_results.items():
             retrieved = result["retrieved"][:k]
             if result["expected"] in retrieved:
                 hits += 1
@@ -357,9 +367,11 @@ def print_eval_report(query_results):
         status = "HIT" if result["expected"] in result["retrieved"][:3] else "MISS"
         print(f"\n[{status}] Query: {query_text}")
         print(f"       Expected: {result['expected']}")
-        for i, (sid, score) in enumerate(zip(result["retrieved"][:5], result["scores"][:5])):
+        retrieved = result["retrieved"][:5]
+        scores = result["scores"][:5]
+        for i, (sid, score) in enumerate(zip(retrieved, scores, strict=True)):
             marker = "<<<" if sid == result["expected"] else ""
-            print(f"       #{i+1}: {sid} ({score:.3f}) {marker}")
+            print(f"       #{i + 1}: {sid} ({score:.3f}) {marker}")
     print("\n--- Metrics ---")
     for name, value in metrics.items():
         print(f"  {name}: {value:.1%}")
@@ -369,6 +381,7 @@ def print_eval_report(query_results):
 # ---------------------------------------------------------------------------
 # CI Tests
 # ---------------------------------------------------------------------------
+
 
 class TestRagEval:
     @pytest.fixture
@@ -388,6 +401,7 @@ class TestRagEval:
             await store_sessions(sm, EVAL_SESSIONS)
             results = await run_queries(sm, EVAL_QUERIES)
             return compute_metrics(results)
+
         metrics = asyncio.run(run())
         assert metrics["recall@1"] >= 0.75  # 6/8 minimum
 
@@ -396,6 +410,7 @@ class TestRagEval:
             await store_sessions(sm, EVAL_SESSIONS)
             results = await run_queries(sm, EVAL_QUERIES)
             return compute_metrics(results)
+
         metrics = asyncio.run(run())
         assert metrics["recall@3"] >= 0.875  # 7/8 minimum
 
@@ -404,6 +419,7 @@ class TestRagEval:
             await store_sessions(sm, EVAL_SESSIONS)
             results = await run_queries(sm, EVAL_QUERIES)
             return compute_metrics(results)
+
         metrics = asyncio.run(run())
         assert metrics["recall@5"] == 1.0  # all queries should hit
 
@@ -411,15 +427,18 @@ class TestRagEval:
         async def run():
             await store_sessions(sm, EVAL_SESSIONS)
             return await run_queries(sm, EVAL_QUERIES)
+
         results = asyncio.run(run())
         metrics = print_eval_report(results)
         assert len(metrics) == 3
 
     def test_multiple_sessions_ranking(self, sm):
         """Verify same-topic sessions are ranked by chunk-level score."""
+
         async def run():
             await store_sessions(sm, EVAL_SESSIONS)
             return await sm.retrieve("implement token-based auth for login")
+
         entries = asyncio.run(run())
         sids = [e.session_id for e in entries]
         # s1 (auth topic) should appear, s4 (style topic) should not
@@ -430,6 +449,7 @@ class TestRagEval:
 # ---------------------------------------------------------------------------
 # Real-model evaluation (run manually)
 # ---------------------------------------------------------------------------
+
 
 async def run_real_eval(model_name="thenlper/gte-small"):
     """Run eval with a real LocalEmbedder model. Requires sentence-transformers."""

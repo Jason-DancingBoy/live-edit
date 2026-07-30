@@ -1,8 +1,10 @@
 """Tests for evaluation.py"""
 
-import pytest
 from live_edit.evaluation import (
-    _detect_lint_cmd, _detect_test_cmd, EvalStage, EvalResult,
+    EvalResult,
+    EvalStage,
+    _detect_lint_cmd,
+    _detect_test_cmd,
 )
 
 
@@ -37,8 +39,7 @@ class TestEvalResult:
         assert r.passed
 
     def test_failed(self):
-        r = EvalResult(passed=False, stages_failed=["test"],
-                       report="test failed")
+        r = EvalResult(passed=False, stages_failed=["test"], report="test failed")
         assert not r.passed
         assert "test" in r.stages_failed
 

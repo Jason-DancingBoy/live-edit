@@ -7,12 +7,12 @@ import os
 import time
 import traceback
 
-from .tools import _tool_summary, _summarize_thinking
+from .config import Config
 from .evaluation import run_evaluation_pipeline
 from .provider import Provider
 from .storage import Storage
+from .tools import _summarize_thinking, _tool_summary
 from .vcs import VCS
-from .config import Config, ModeConfig
 
 logger = logging.getLogger("live-edit.engine")
 
@@ -35,15 +35,16 @@ _DEFAULT_ERROR_MAP = {
 }
 
 
-def translate_error(error: str, mode: str = "quick", custom_map: dict | None = None,
-                    config=None) -> str:
+def translate_error(
+    error: str, mode: str = "quick", custom_map: dict | None = None, config=None
+) -> str:
     """Translate technical errors to user-friendly messages per mode.
 
     Priority: custom_map > config.errors.<mode> > built-in defaults.
     """
     if custom_map is None and config is not None:
         try:
-            custom_map = getattr(config.errors, mode, None) or getattr(config.errors, 'quick', {})
+            custom_map = getattr(config.errors, mode, None) or getattr(config.errors, "quick", {})
         except Exception:
             custom_map = {}
     error_map = custom_map or _DEFAULT_ERROR_MAP.get(mode, {})
@@ -90,9 +91,9 @@ def _repair_messages(messages: list[dict]) -> None:
 
     # Check if the next message is a user message with matching tool_results
     if last_ai + 1 >= len(messages) or messages[last_ai + 1].get("role") != "user":
-        next_content = []
+        next_content: list = []
     else:
-        next_content = messages[last_ai + 1].get("content")
+        next_content = messages[last_ai + 1].get("content")  # type: ignore[assignment]
         if not isinstance(next_content, list):
             next_content = []
 
@@ -106,14 +107,16 @@ def _repair_messages(messages: list[dict]) -> None:
         return
 
     logger = logging.getLogger("live-edit.engine")
-    logger.warning("Repairing messages: stripping %d unpaired tool_use(s): %s",
-                   len(unpaired), unpaired)
+    logger.warning(
+        "Repairing messages: stripping %d unpaired tool_use(s): %s", len(unpaired), unpaired
+    )
 
     # Strip unpaired tool_use blocks
-    cleaned = [b for b in content
-               if not (isinstance(b, dict)
-                       and b.get("type") == "tool_use"
-                       and b.get("id") in unpaired)]
+    cleaned = [
+        b
+        for b in content
+        if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in unpaired)
+    ]
     if not cleaned:
         messages.pop(last_ai)
         # Also remove the orphaned user message if it only contained
@@ -148,6 +151,8 @@ class EditSession:
         self._cancelled = asyncio.Event()
         self._preview_url: str = ""
         self._cached_diff: str = ""
+        self._session_memory = None
+        self._preview_announced = False
 
     def new_stream_queue(self):
         """Create a fresh queue for a new SSE connection (used for continuation)."""
@@ -155,8 +160,9 @@ class EditSession:
         self._approve_event = asyncio.Event()
         self._approve_result = None
 
-    async def wait_for_approval(self, tool_id: str, tool_data: dict,
-                                 timeout: float = 300.0) -> dict:
+    async def wait_for_approval(
+        self, tool_id: str, tool_data: dict, timeout: float = 300.0
+    ) -> dict:
         """Send tool_plan event and wait for frontend to call approve endpoint."""
         self._approve_event.clear()
         self._approve_result = None
@@ -225,10 +231,7 @@ class SessionStore:
     def _expire_stale(self):
         """Remove all expired sessions."""
         now = time.time()
-        stale = [
-            sid for sid, s in self._sessions.items()
-            if now - s._created_at > self.ttl_seconds
-        ]
+        stale = [sid for sid, s in self._sessions.items() if now - s._created_at > self.ttl_seconds]
         for sid in stale:
             self._sessions.pop(sid, None)
 
@@ -260,24 +263,28 @@ def build_timeline(vcs: VCS, storage: Storage, limit: int = 30) -> list[dict]:
 
     for c in commits:
         h = c.get("commit_hash", "")
-        entries.append({
-            "commit_hash": h,
-            "message": c.get("message", ""),
-            "date": c.get("date", ""),
-            "is_live_edit": True,
-            "session": sessions_by_hash.get(h),
-        })
+        entries.append(
+            {
+                "commit_hash": h,
+                "message": c.get("message", ""),
+                "date": c.get("date", ""),
+                "is_live_edit": True,
+                "session": sessions_by_hash.get(h),
+            }
+        )
 
     committed_hashes = {c.get("commit_hash", "") for c in commits}
     for s in sessions:
         if s.get("commit_hash") not in committed_hashes or not s.get("committed"):
-            entries.append({
-                "commit_hash": s.get("commit_hash", ""),
-                "message": s.get("request", ""),
-                "date": s.get("created_at", ""),
-                "is_live_edit": True,
-                "session": s,
-            })
+            entries.append(
+                {
+                    "commit_hash": s.get("commit_hash", ""),
+                    "message": s.get("request", ""),
+                    "date": s.get("created_at", ""),
+                    "is_live_edit": True,
+                    "session": s,
+                }
+            )
 
     entries.sort(key=lambda e: e.get("date", ""), reverse=True)
     return entries[:limit]
@@ -313,13 +320,22 @@ async def _run_agent_loop_fix(session, provider, config, tool_registry, max_roun
             if block.get("type") == "text":
                 assistant_content.append({"type": "text", "text": block.get("text", "")})
             elif block.get("type") == "thinking":
-                assistant_content.append({"type": "thinking", "thinking": block.get("thinking", "")})
+                assistant_content.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block.get("thinking", ""),
+                    }
+                )
             elif block.get("type") == "tool_use":
                 tool_uses.append(block)
-                assistant_content.append({
-                    "type": "tool_use", "id": block["id"],
-                    "name": block["name"], "input": block.get("input", {}),
-                })
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": block["id"],
+                        "name": block["name"],
+                        "input": block.get("input", {}),
+                    }
+                )
 
         if not tool_uses:
             session.messages.append({"role": "assistant", "content": assistant_content})
@@ -328,12 +344,17 @@ async def _run_agent_loop_fix(session, provider, config, tool_registry, max_roun
         tool_results = []
         for tool in tool_uses:
             exec_result = await tool_registry.execute(
-                tool["name"], tool.get("input", {}), _root, config)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool["id"],
-                "content": [{"type": "text", "text": _json.dumps(exec_result, ensure_ascii=False)}],
-            })
+                tool["name"], tool.get("input", {}), _root, config
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool["id"],
+                    "content": [
+                        {"type": "text", "text": _json.dumps(exec_result, ensure_ascii=False)}
+                    ],
+                }
+            )
             session.emit("tool_result", id=tool["id"], **exec_result)
             if tool["name"] in ("edit_file", "write_file") and exec_result.get("ok"):
                 path = tool.get("input", {}).get("path", "")
@@ -354,17 +375,18 @@ async def _build_system_prompt(config: Config, mode: str) -> str:
         return "You are a helpful AI assistant for code editing."
 
     prompt = mode_cfg.prompt
-    parts = [getattr(prompt, 'base', '') or '',
-             getattr(prompt, 'user_persona', '') or '',
-             getattr(prompt, 'communication_rules', '') or '']
-    extra = getattr(config.project, 'extra_context', '') if hasattr(config, 'project') else ''
+    parts = [
+        getattr(prompt, "base", "") or "",
+        getattr(prompt, "user_persona", "") or "",
+        getattr(prompt, "communication_rules", "") or "",
+    ]
+    extra = getattr(config.project, "extra_context", "") if hasattr(config, "project") else ""
     if extra:
         parts.append(extra)
     return "\n\n".join(p for p in parts if p)
 
 
-async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
-                     config=None):
+async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=None):
     """Commit in worktree, keep the change on the session branch, clean up worktree.
 
     Does NOT merge into main — the change stays on live-edit/<session_id> for
@@ -374,33 +396,39 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
     before committing. A non-zero exit aborts the commit.
     """
     import subprocess as _subprocess
+
     try:
         msg = f"live-edit: {session.request[:80]}"
 
         # Step 0: run pre-commit hook if configured
         pre_commit_cmd = ""
-        if config and hasattr(config, 'hooks') and config.hooks:
-            pre_commit_cmd = getattr(config.hooks, 'pre_commit', '') or ""
+        if config and hasattr(config, "hooks") and config.hooks:
+            pre_commit_cmd = getattr(config.hooks, "pre_commit", "") or ""
         if pre_commit_cmd:
-            logger.info("Session %s: running pre_commit hook: %s",
-                        session.id, pre_commit_cmd)
+            logger.info("Session %s: running pre_commit hook: %s", session.id, pre_commit_cmd)
             result = _subprocess.run(
-                pre_commit_cmd, shell=True,
-                capture_output=True, text=True, timeout=120,
+                pre_commit_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
                 cwd=session._worktree_path,
             )
             if result.returncode != 0:
                 output = (result.stdout + result.stderr)[:800]
                 logger.warning(
                     "Session %s: pre_commit hook failed (exit %d): %s",
-                    session.id, result.returncode, output)
-                session.emit("error",
-                    error=f"pre-commit 检查失败 (exit {result.returncode}):\n{output}")
+                    session.id,
+                    result.returncode,
+                    output,
+                )
+                session.emit(
+                    "error", error=f"pre-commit 检查失败 (exit {result.returncode}):\n{output}"
+                )
                 return
 
         # Step 1: commit inside the worktree
-        wt_hash = vcs.commit_in_worktree(
-            session._worktree_path, session._modified_files, msg)
+        wt_hash = vcs.commit_in_worktree(session._worktree_path, session._modified_files, msg)
         # Step 2: keep or remove worktree dir; KEEP the branch
         if session._preview_url:
             # Preview is running — keep worktree dir so preview can serve files.
@@ -412,14 +440,14 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         session._worktree_path = ""  # prevent finally block from removing worktree
         session._commit_hash = wt_hash
 
-        sm = getattr(session, '_session_memory', None)
+        sm = getattr(session, "_session_memory", None)
         if sm is not None:
             try:
                 await sm.store(
                     session_id=session.id,
                     request=session.request,
                     files=session._modified_files,
-                    diff=getattr(session, '_cached_diff', ''),
+                    diff=getattr(session, "_cached_diff", ""),
                     commit_hash=session._commit_hash,
                 )
             except Exception as e:
@@ -429,11 +457,19 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage,
         preview_note = ""
         if session._preview_url:
             preview_note = f" 预览地址: {session._preview_url}/app"
-        session.emit("done", committed=True, commit_hash=session._commit_hash,
-                     message=f"改动已保存到分支 live-edit/{session.id}，可在管理页面合入 main 后生效。{preview_note}",
-                     can_continue=True)
-        logger.info("Session %s: committed %s (branch kept, not merged)",
-                    session.id, session._commit_hash)
+        session.emit(
+            "done",
+            committed=True,
+            commit_hash=session._commit_hash,
+            message=(
+                f"改动已保存到分支 live-edit/{session.id}，"
+                f"可在管理页面合入 main 后生效。{preview_note}"
+            ),
+            can_continue=True,
+        )
+        logger.info(
+            "Session %s: committed %s (branch kept, not merged)", session.id, session._commit_hash
+        )
     except Exception as e:
         logger.error("Commit error: %s", e)
         session.emit("error", error=f"提交失败: {e}")
@@ -449,8 +485,7 @@ def _format_memory_context(memories: list, template: str = "") -> str:
             items = []
             for i, m in enumerate(memories, 1):
                 items.append(
-                    template
-                    .replace("{index}", str(i))
+                    template.replace("{index}", str(i))
                     .replace("{request}", m.request)
                     .replace("{file}", m.file_path or "(request)")
                     .replace("{diff_summary}", m.diff_summary or "")
@@ -516,15 +551,13 @@ async def run_edit_session(
             session.emit("preview_ready", url=f"{preview_url}/app")
 
     # ── Session memory setup (validated once at startup) ──
-    from .session_memory import SessionMemory
     from .embedder import LocalEmbedder
+    from .session_memory import SessionMemory
 
     session_memory = None
-    if hasattr(config, 'session_memory') and config.session_memory.enabled:
+    if hasattr(config, "session_memory") and config.session_memory.enabled:
         try:
-            sm_embedder = LocalEmbedder(
-                model_name=config.session_memory.embedder.model
-            )
+            sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
             # Validate embedding works before using in session
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, sm_embedder.embed, "test")
@@ -539,18 +572,19 @@ async def run_edit_session(
                 "installed. Install with: pip install live-edit[rag]"
             )
         except Exception as e:
-            logger.warning(
-                "Session memory disabled: embedding model failed to load: %s", e
-            )
+            logger.warning("Session memory disabled: embedding model failed to load: %s", e)
 
     # Store on session so _do_commit can use it
-    session._session_memory = session_memory
+    session._session_memory = session_memory  # type: ignore[assignment]
 
     if continue_msg and session.messages:
         messages = session.messages
-        if messages and isinstance(messages[0].get("content"), str):
-            if len(str(messages[0]["content"])) > 200:
-                messages[0]["content"] = system_prompt
+        if (
+            messages
+            and isinstance(messages[0].get("content"), str)
+            and len(str(messages[0]["content"])) > 200
+        ):
+            messages[0]["content"] = system_prompt
         # Repair any unpaired tool_use blocks left from a previous
         # crashed/cancelled session (safety net for old persisted data).
         _repair_messages(messages)
@@ -587,16 +621,21 @@ async def run_edit_session(
                 logger.warning("Failed to retrieve session memory: %s", e)
 
     # Let the AI know about the preview URL so it can tell the user
-    if session._preview_url and not getattr(session, '_preview_announced', False):
+    if session._preview_url and not getattr(session, "_preview_announced", False):
         session._preview_announced = True
-        messages.append({
-            "role": "user",
-            "content": f"预览服务器已启动: {session._preview_url}/app\n请在回复中告知用户可以通过此链接预览修改效果。",
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"预览服务器已启动: {session._preview_url}/app\n"
+                    "请在回复中告知用户可以通过此链接预览修改效果。"
+                ),
+            }
+        )
 
     max_rounds = config.timeouts.max_rounds if config and config.timeouts else 15
     round_num = 0
-    _write_less_rounds = 0   # consecutive rounds without any write tool calls
+    _write_less_rounds = 0  # consecutive rounds without any write tool calls
 
     try:
         while round_num < max_rounds:
@@ -605,21 +644,29 @@ async def run_edit_session(
                 break
             round_num += 1
 
-            thinking_chunks = []
-            text_chunks = []
-            _thinking_started = []
+            thinking_chunks: list[str] = []
+            text_chunks: list[str] = []
+            _thinking_started: list[bool] = []
 
-            def on_thinking(t):
+            def on_thinking(
+                t,
+                _thinking_started=_thinking_started,
+                thinking_chunks=thinking_chunks,
+            ):
                 if not _thinking_started:
                     _thinking_started.append(True)
                     session.emit("thinking_started")
                 thinking_chunks.append(t)
 
+            def _on_text(t, _tc=text_chunks):
+                _tc.append(t)
+                session.emit("text", text=t)
+
             content_blocks = await provider.call_with_tools(
                 messages=messages,
                 tools=tools,
                 on_thinking=on_thinking,
-                on_text=lambda t: text_chunks.append(t) or session.emit("text", text=t),
+                on_text=_on_text,
             )
 
             if content_blocks is None:
@@ -656,14 +703,21 @@ async def run_edit_session(
                 if block.get("type") == "text":
                     assistant_content.append({"type": "text", "text": block.get("text", "")})
                 elif block.get("type") == "thinking":
-                    assistant_content.append({"type": "thinking", "thinking": block.get("thinking", "")})
+                    assistant_content.append(
+                        {
+                            "type": "thinking",
+                            "thinking": block.get("thinking", ""),
+                        }
+                    )
                 elif block.get("type") == "tool_use":
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": block["id"],
-                        "name": block["name"],
-                        "input": block.get("input", {}),
-                    })
+                    assistant_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": block["id"],
+                            "name": block["name"],
+                            "input": block.get("input", {}),
+                        }
+                    )
 
             if not tool_uses:
                 messages.append({"role": "assistant", "content": assistant_content})
@@ -673,12 +727,26 @@ async def run_edit_session(
                     if mode == "deep":
                         _write_less_rounds += 1
                         if _write_less_rounds <= 3:
-                            messages.append({"role": "user", "content": "分析已经足够了。现在请停止搜索和阅读，直接使用 edit_file（或 write_file）工具执行代码修改。不要再返回纯文本分析。"})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "分析已经足够了。现在请停止搜索和阅读，"
+                                        "直接使用 edit_file（或 write_file）工具"
+                                        "执行代码修改。不要再返回纯文本分析。"
+                                    ),
+                                }
+                            )
                             continue
                     elif round_num <= 3:
                         total_text = "".join(text_parts).strip()
                         if len(total_text) < 200:
-                            messages.append({"role": "user", "content": "请继续，进行实际的代码修改（不要只描述计划）。"})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": "请继续，进行实际的代码修改（不要只描述计划）。",
+                                }
+                            )
                             continue
                 break
 
@@ -687,7 +755,6 @@ async def run_edit_session(
             # mid-way or the user rejects a tool — no tool_use blocks are ever
             # persisted without matching tool_result blocks.
             tool_results = []
-            all_approved = True
             _round_has_write = False
 
             for i, tool in enumerate(tool_uses):
@@ -705,55 +772,86 @@ async def run_edit_session(
                 if needs_approval:
                     reason = tool_input.get("reason", "")
                     summary = _tool_summary(tool_name, tool_input)
-                    result = await session.wait_for_approval(tool_id, {
-                        "tool": tool_name,
-                        "args": tool_input,
-                        "reason": reason,
-                        "summary": summary,
-                    })
+                    result = await session.wait_for_approval(
+                        tool_id,
+                        {
+                            "tool": tool_name,
+                            "args": tool_input,
+                            "reason": reason,
+                            "summary": summary,
+                        },
+                    )
                     if not result.get("approved"):
-                        all_approved = False
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_id,
-                            "content": [{"type": "text", "text": "用户拒绝执行此操作。"}],
-                        })
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": [{"type": "text", "text": "用户拒绝执行此操作。"}],
+                            }
+                        )
                         session.emit("tool_result", id=tool_id, ok=False, error="用户拒绝执行")
                         # Fill tool_results for remaining unprocessed tool_uses,
                         # otherwise the API rejects the next request with a 400
                         # ("tool_use ids without tool_result blocks").
-                        for remaining in tool_uses[i + 1:]:
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": remaining["id"],
-                                "content": [{"type": "text", "text": "操作已跳过（前一个操作被用户拒绝）。"}],
-                            })
-                            session.emit("tool_result", id=remaining["id"], ok=False, error="已跳过")
+                        for remaining in tool_uses[i + 1 :]:
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": remaining["id"],
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "操作已跳过（前一个操作被用户拒绝）。",
+                                        },
+                                    ],
+                                }
+                            )
+                            session.emit(
+                                "tool_result",
+                                id=remaining["id"],
+                                ok=False,
+                                error="已跳过",
+                            )
                         break
                 elif mode == "deep":
-                    session.emit("tool_plan",
-                        id=tool_id, tool=tool_name, args=tool_input,
+                    session.emit(
+                        "tool_plan",
+                        id=tool_id,
+                        tool=tool_name,
+                        args=tool_input,
                         reason=tool_input.get("reason", ""),
                         summary=_tool_summary(tool_name, tool_input),
                         auto=True,
                     )
 
-                exec_result = await tool_registry.execute(tool_name, tool_input, _root, config) if tool_registry else {"ok": False, "error": "No tool registry"}
+                exec_result = (
+                    await tool_registry.execute(tool_name, tool_input, _root, config)
+                    if tool_registry
+                    else {"ok": False, "error": "No tool registry"}
+                )
                 if not exec_result.get("ok") and mode == "quick":
-                    exec_result["error"] = translate_error(exec_result.get("error", ""), "quick", config=config)
+                    exec_result["error"] = translate_error(
+                        str(exec_result.get("error", "")),
+                        "quick",
+                        config=config,
+                    )
                 session.emit("tool_result", id=tool_id, **exec_result)
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_id,
-                    "content": [{"type": "text", "text": json.dumps(exec_result, ensure_ascii=False)}],
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": [
+                            {"type": "text", "text": json.dumps(exec_result, ensure_ascii=False)},
+                        ],
+                    }
+                )
 
                 if tool_name in ("edit_file", "write_file"):
                     _round_has_write = True
-                    if exec_result.get("ok"):
-                        if tool_input.get("path") not in session._modified_files:
-                            session._modified_files.append(tool_input["path"])
+                    fpath = tool_input.get("path")
+                    if exec_result.get("ok") and fpath not in session._modified_files:
+                        session._modified_files.append(fpath)
 
             # Now append assistant + tool_results atomically — every tool_use
             # has a matching tool_result at this point.
@@ -767,14 +865,35 @@ async def run_edit_session(
                 _write_less_rounds += 1
 
             # In deep mode, after 3+ consecutive read-only rounds with no edits, nudge
-            if (mode == "deep" and _write_less_rounds >= 3
-                    and not session._modified_files and round_num < max_rounds - 1):
-                messages.append({"role": "user", "content": "你已经做了充分的调研。现在必须立即执行代码修改。请使用 edit_file 工具直接修改文件，不要再使用 search_code、read_file 或任何只读工具。如果你不确定 old_string 的精确内容，先用 read_file 读取关键行再立即 edit_file。"})
-                _write_less_rounds = 0   # reset to avoid repeated nudges
+            if (
+                mode == "deep"
+                and _write_less_rounds >= 3
+                and not session._modified_files
+                and round_num < max_rounds - 1
+            ):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你已经做了充分的调研。现在必须立即执行代码修改。"
+                            "请使用 edit_file 工具直接修改文件，"
+                            "不要再使用 search_code、read_file 或任何只读工具。"
+                            "如果你不确定 old_string 的精确内容，"
+                            "先用 read_file 读取关键行再立即 edit_file。"
+                        ),
+                    }
+                )
+                _write_less_rounds = 0  # reset to avoid repeated nudges
 
         # ── Evaluation pipeline (with retry loop) ──
-        if config and hasattr(config, 'evaluation') and config.evaluation.enabled and session._modified_files:
+        if (
+            config
+            and hasattr(config, "evaluation")
+            and config.evaluation.enabled
+            and session._modified_files
+        ):
             import subprocess as _sp2
+
             session.emit("eval_started", stages=config.evaluation.stages)
             max_eval_retries = config.evaluation.max_retries
             retry = 0
@@ -791,8 +910,11 @@ async def run_edit_session(
                 retry += 1
                 if retry > max_eval_retries:
                     break
-                session.emit("eval_retry", round=retry,
-                            reason=f"{eval_result.failed_stage} 失败，正在自动修复...")
+                session.emit(
+                    "eval_retry",
+                    round=retry,
+                    reason=f"{eval_result.failed_stage} 失败，正在自动修复...",
+                )
                 fix_prompt = (
                     f"评估阶段「{eval_result.failed_stage}」发现以下问题，请修复：\n\n"
                     f"```\n{eval_result.failed_output[:1500]}\n```\n\n"
@@ -801,34 +923,48 @@ async def run_edit_session(
                 session.messages.append({"role": "user", "content": fix_prompt})
                 # Re-enter agent loop for fix (shorter max rounds)
                 await _run_agent_loop_fix(
-                    session=session, provider=provider, config=config,
-                    tool_registry=tool_registry, max_rounds=5,
+                    session=session,
+                    provider=provider,
+                    config=config,
+                    tool_registry=tool_registry,
+                    max_rounds=5,
                 )
                 # Refresh diff for next evaluation round
-                _sp2.run(["git", "-C", _root, "add", "-A"],
-                        capture_output=True, text=True, timeout=10)
+                _sp2.run(
+                    ["git", "-C", _root, "add", "-A"], capture_output=True, text=True, timeout=10
+                )
                 diff_result = _sp2.run(
                     ["git", "-C", _root, "diff", "--cached"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 session._cached_diff = diff_result.stdout.strip()
 
             if eval_result and not eval_result.passed:
-                session.emit("eval_complete", passed=False,
-                            report=f"评估未完全通过（已达最大重试次数 {max_eval_retries}）")
+                session.emit(
+                    "eval_complete",
+                    passed=False,
+                    report=f"评估未完全通过（已达最大重试次数 {max_eval_retries}）",
+                )
 
         # After the loop: detect all changes in the worktree (including new files)
         import subprocess as _sp
+
         # Stage everything so git diff --cached captures new + modified files
         _sp.run(
             ["git", "-C", _root, "add", "-A"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         all_modified = set(session._modified_files)
         try:
             git_files = _sp.run(
                 ["git", "-C", _root, "diff", "--cached", "--name-only"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             for f in git_files.stdout.strip().split("\n"):
                 f = f.strip()
@@ -841,21 +977,28 @@ async def run_edit_session(
         if not session._modified_files:
             _sp.run(
                 ["git", "-C", _root, "reset", "HEAD"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             session.emit("done", committed=False, message="完成", can_continue=True)
         else:
             try:
                 # Get diffs from staged changes in the worktree
                 diff_stat_result = _sp.run(
-                    ["git", "-C", _root, "diff", "--cached", "--stat", "--"] + session._modified_files,
-                    capture_output=True, text=True, timeout=10,
+                    ["git", "-C", _root, "diff", "--cached", "--stat", "--"]
+                    + session._modified_files,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 diff_stat = diff_stat_result.stdout.strip() or "(无变更)"
 
                 diff_full_result = _sp.run(
                     ["git", "-C", _root, "diff", "--cached", "--"] + session._modified_files,
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 diff_full = diff_full_result.stdout.strip()
                 session._cached_diff = diff_full
@@ -863,14 +1006,22 @@ async def run_edit_session(
                 if not diff_full:
                     _sp.run(
                         ["git", "-C", _root, "reset", "HEAD"],
-                        capture_output=True, text=True, timeout=10,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
-                    session.emit("done", committed=False, message="没有需要提交的变更", can_continue=True)
+                    session.emit(
+                        "done",
+                        committed=False,
+                        message="没有需要提交的变更",
+                        can_continue=True,
+                    )
                     _persist_session(session, storage, messages)
                     return
 
-                session.emit("diff", files=session._modified_files,
-                             summary=diff_stat, diff=diff_full)
+                session.emit(
+                    "diff", files=session._modified_files, summary=diff_stat, diff=diff_full
+                )
 
             except Exception as e:
                 logger.error("Diff error: %s", e)
@@ -880,11 +1031,15 @@ async def run_edit_session(
             if mode == "deep":
                 await _do_commit(session, vcs, storage, config)
             else:
-                final = await session.wait_for_approval("__final__", {
-                    "tool": "final_commit",
-                    "files": session._modified_files,
-                    "summary": diff_stat,
-                }, timeout=600.0)
+                final = await session.wait_for_approval(
+                    "__final__",
+                    {
+                        "tool": "final_commit",
+                        "files": session._modified_files,
+                        "summary": diff_stat,
+                    },
+                    timeout=600.0,
+                )
 
                 if final.get("approved"):
                     await _do_commit(session, vcs, storage, config)
@@ -926,9 +1081,13 @@ def _persist_session(session: EditSession, storage: Storage, messages: list[dict
     try:
         msgs_to_save = []
         for m in messages:
-            if m.get("role") == "user" and isinstance(m.get("content"), str):
-                if len(m["content"]) > 500 and "项目技术栈" in m["content"]:
-                    continue
+            if (
+                m.get("role") == "user"
+                and isinstance(m.get("content"), str)
+                and len(m["content"]) > 500
+                and "项目技术栈" in m["content"]
+            ):
+                continue
             msgs_to_save.append(m)
         msgs_json = json.dumps(msgs_to_save, ensure_ascii=False)
         storage.save_session(

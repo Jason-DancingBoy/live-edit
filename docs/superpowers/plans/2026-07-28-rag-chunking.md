@@ -69,40 +69,42 @@ In `SQLiteStorage._init_db()`, add after the `session_embeddings` table creation
 Add to `SQLiteStorage` (after `delete_old_embeddings` at line 174):
 
 ```python
-    def store_chunks(self, session_id: str, commit_hash: str,
-                     chunks: list[dict]) -> None:
-        """Transactionally replace all chunks for a session.
+def store_chunks(self, session_id: str, commit_hash: str, chunks: list[dict]) -> None:
+    """Transactionally replace all chunks for a session.
 
-        Each chunk dict: {'chunk_type', 'chunk_text', 'payload_json',
-                          'file_path', 'embedding_bytes'}
+    Each chunk dict: {'chunk_type', 'chunk_text', 'payload_json',
+                      'file_path', 'embedding_bytes'}
 
-        Runs DELETE old chunks + INSERT new chunks + eviction check
-        in a single BEGIN IMMEDIATE / COMMIT for atomicity.
-        """
-        conn = self._get_conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+    Runs DELETE old chunks + INSERT new chunks + eviction check
+    in a single BEGIN IMMEDIATE / COMMIT for atomicity.
+    """
+    conn = self._get_conn()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "DELETE FROM session_chunks WHERE session_id = ?",
+            (session_id,),
+        )
+        for c in chunks:
             conn.execute(
-                "DELETE FROM session_chunks WHERE session_id = ?",
-                (session_id,),
+                """INSERT INTO session_chunks
+                   (session_id, commit_hash, chunk_type, chunk_text,
+                    payload_json, file_path, embedding)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    commit_hash,
+                    c["chunk_type"],
+                    c["chunk_text"],
+                    c["payload_json"],
+                    c.get("file_path", ""),
+                    c["embedding_bytes"],
+                ),
             )
-            for c in chunks:
-                conn.execute(
-                    """INSERT INTO session_chunks
-                       (session_id, commit_hash, chunk_type, chunk_text,
-                        payload_json, file_path, embedding)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        session_id, commit_hash,
-                        c["chunk_type"], c["chunk_text"],
-                        c["payload_json"], c.get("file_path", ""),
-                        c["embedding_bytes"],
-                    ),
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 ```
 
 - [ ] **Step 3: Implement `query_chunks()` with LIMIT**
@@ -169,14 +171,15 @@ Add to `SQLiteStorage` (after `delete_old_embeddings` at line 174):
 - [ ] **Step 6: Implement `get_db_version()` and `set_db_version()`**
 
 ```python
-    def get_db_version(self) -> int:
-        conn = self._get_conn()
-        return conn.execute("PRAGMA user_version").fetchone()[0]
+def get_db_version(self) -> int:
+    conn = self._get_conn()
+    return conn.execute("PRAGMA user_version").fetchone()[0]
 
-    def set_db_version(self, version: int) -> None:
-        conn = self._get_conn()
-        conn.execute(f"PRAGMA user_version = {int(version)}")
-        conn.commit()
+
+def set_db_version(self, version: int) -> None:
+    conn = self._get_conn()
+    conn.execute(f"PRAGMA user_version = {int(version)}")
+    conn.commit()
 ```
 
 - [ ] **Step 7: Write tests — add `TestSessionChunks` class to `tests/test_storage.py`**
@@ -195,9 +198,7 @@ class TestSessionChunks:
 
     def test_init_creates_chunks_table(self, storage):
         conn = storage._get_conn()
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "session_chunks" in table_names
 
@@ -226,20 +227,24 @@ class TestSessionChunks:
 
     def test_store_replaces_existing_session(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
-        chunks1 = [{
-            "chunk_type": "request",
-            "chunk_text": "first",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
-        chunks2 = [{
-            "chunk_type": "request",
-            "chunk_text": "second",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
+        chunks1 = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "first",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
+        chunks2 = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "second",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
         storage.store_chunks("s1", "abc", chunks1)
         storage.store_chunks("s1", "def", chunks2)
         rows = storage.query_chunks()
@@ -248,28 +253,33 @@ class TestSessionChunks:
 
     def test_delete_session_chunks(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
-        chunks = [{
-            "chunk_type": "request",
-            "chunk_text": "test",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }]
+        chunks = [
+            {
+                "chunk_type": "request",
+                "chunk_text": "test",
+                "payload_json": "{}",
+                "file_path": "",
+                "embedding_bytes": emb,
+            }
+        ]
         storage.store_chunks("s1", "abc", chunks)
         storage.delete_session_chunks("s1")
         assert storage.query_chunks() == []
 
     def test_delete_old_sessions_keeps_most_recent(self, storage):
         import time
+
         emb = struct.pack("4f", 0.0, 0.0, 0.0, 0.0)
         for i in range(5):
-            chunks = [{
-                "chunk_type": "request",
-                "chunk_text": f"req{i}",
-                "payload_json": "{}",
-                "file_path": "",
-                "embedding_bytes": emb,
-            }]
+            chunks = [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": f"req{i}",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ]
             storage.store_chunks(f"s{i}", "hash", chunks)
             time.sleep(1.1)  # ensure distinct created_at timestamps
 
@@ -285,13 +295,19 @@ class TestSessionChunks:
         """If one INSERT fails, all DELETEs are rolled back."""
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
         # Pre-populate
-        storage.store_chunks("s1", "abc", [{
-            "chunk_type": "request",
-            "chunk_text": "original",
-            "payload_json": "{}",
-            "file_path": "",
-            "embedding_bytes": emb,
-        }])
+        storage.store_chunks(
+            "s1",
+            "abc",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "original",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ],
+        )
         # Try to store a chunk missing required key — should fail
         bad_chunks = [{"not_a_valid_chunk": True}]
         with pytest.raises(Exception):
@@ -311,13 +327,15 @@ class TestSessionChunks:
     def test_query_chunks_respects_limit(self, storage):
         emb = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
         for i in range(5):
-            chunks = [{
-                "chunk_type": "request",
-                "chunk_text": f"req{i}",
-                "payload_json": "{}",
-                "file_path": "",
-                "embedding_bytes": emb,
-            }]
+            chunks = [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": f"req{i}",
+                    "payload_json": "{}",
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                }
+            ]
             storage.store_chunks(f"s{i}", "hash", chunks)
         rows = storage.query_chunks(limit=3)
         assert len(rows) == 3
@@ -401,8 +419,9 @@ class SessionMemory:
 
     # --- Public API ---
 
-    async def store(self, session_id: str, request: str, files: list[str],
-                    diff: str, commit_hash: str) -> None:
+    async def store(
+        self, session_id: str, request: str, files: list[str], diff: str, commit_hash: str
+    ) -> None:
         """Chunk session by file and store embeddings transactionally.
 
         Produces 1 request chunk + 1 file_diff chunk per modified file.
@@ -414,38 +433,37 @@ class SessionMemory:
             loop = asyncio.get_running_loop()
 
             # Parse diff into per-file chunks
-            file_chunks = await loop.run_in_executor(
-                None, self._split_diff_by_file, diff
-            )
+            file_chunks = await loop.run_in_executor(None, self._split_diff_by_file, diff)
 
             # Build all chunk_texts for batch embedding
             chunk_texts = [request]  # request chunk
             for fc in file_chunks:
-                chunk_texts.append(
-                    f"{request}\nFile: {fc['file_path']}\nChanges: {fc['stat']}"
-                )
+                chunk_texts.append(f"{request}\nFile: {fc['file_path']}\nChanges: {fc['stat']}")
 
             # Batch embed (CPU-bound)
-            embeddings = await loop.run_in_executor(
-                None, self._embedder.embed_batch, chunk_texts
-            )
+            embeddings = await loop.run_in_executor(None, self._embedder.embed_batch, chunk_texts)
 
             # Construct chunk dicts with embeddings
             dim = len(embeddings[0])
             chunks = []
 
             # Request chunk
-            chunks.append({
-                "chunk_type": "request",
-                "chunk_text": chunk_texts[0],
-                "payload_json": json.dumps({
-                    "request": request,
-                    "files": files or [],
-                    "commit_hash": commit_hash,
-                }, ensure_ascii=False),
-                "file_path": "",
-                "embedding_bytes": struct.pack(f"{dim}f", *embeddings[0]),
-            })
+            chunks.append(
+                {
+                    "chunk_type": "request",
+                    "chunk_text": chunk_texts[0],
+                    "payload_json": json.dumps(
+                        {
+                            "request": request,
+                            "files": files or [],
+                            "commit_hash": commit_hash,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "file_path": "",
+                    "embedding_bytes": struct.pack(f"{dim}f", *embeddings[0]),
+                }
+            )
 
             # File-diff chunks
             for i, fc in enumerate(file_chunks):
@@ -456,23 +474,21 @@ class SessionMemory:
                     "request": request,
                     "commit_hash": commit_hash,
                 }
-                chunks.append({
-                    "chunk_type": "file_diff",
-                    "chunk_text": chunk_texts[i + 1],
-                    "payload_json": json.dumps(payload, ensure_ascii=False),
-                    "file_path": fc["file_path"],
-                    "embedding_bytes": struct.pack(
-                        f"{dim}f", *embeddings[i + 1]
-                    ),
-                })
+                chunks.append(
+                    {
+                        "chunk_type": "file_diff",
+                        "chunk_text": chunk_texts[i + 1],
+                        "payload_json": json.dumps(payload, ensure_ascii=False),
+                        "file_path": fc["file_path"],
+                        "embedding_bytes": struct.pack(f"{dim}f", *embeddings[i + 1]),
+                    }
+                )
 
             # Transactional write + eviction in one run_in_executor call
             max_sessions = self.config.max_stored_entries
             await loop.run_in_executor(
                 None,
-                lambda: self._storage.store_chunks(
-                    session_id, commit_hash, chunks
-                ),
+                lambda: self._storage.store_chunks(session_id, commit_hash, chunks),
             )
             # Evict old sessions (fire-and-forget; session-level)
             await loop.run_in_executor(
@@ -482,7 +498,8 @@ class SessionMemory:
 
         except Exception:
             logger.warning(
-                "Failed to store chunks for session %s", session_id,
+                "Failed to store chunks for session %s",
+                session_id,
                 exc_info=True,
             )
 
@@ -492,17 +509,11 @@ class SessionMemory:
             return []
         try:
             loop = asyncio.get_running_loop()
-            query_vec = await loop.run_in_executor(
-                None, self._embedder.embed, request
-            )
-            rows = await loop.run_in_executor(
-                None, self._storage.query_chunks
-            )
+            query_vec = await loop.run_in_executor(None, self._embedder.embed, request)
+            rows = await loop.run_in_executor(None, self._storage.query_chunks)
             return self._score_and_rank(query_vec, rows)
         except Exception:
-            logger.warning(
-                "Failed to retrieve session memories", exc_info=True
-            )
+            logger.warning("Failed to retrieve session memories", exc_info=True)
             return []
 
     # --- Diff parsing ---
@@ -518,7 +529,7 @@ class SessionMemory:
             return []
 
         # Split on 'diff --git ' boundaries
-        parts = re.split(r'^(?=diff --git )', diff, flags=re.MULTILINE)
+        parts = re.split(r"^(?=diff --git )", diff, flags=re.MULTILINE)
         results = []
 
         for part in parts:
@@ -527,18 +538,14 @@ class SessionMemory:
                 continue
 
             # Check for binary
-            if re.search(r'^Binary files ', part, re.MULTILINE):
+            if re.search(r"^Binary files ", part, re.MULTILINE):
                 continue
 
             # Extract file path from ---/+++ headers
-            file_match = re.search(
-                r'^\+\+\+ b/(.+)$', part, re.MULTILINE
-            )
+            file_match = re.search(r"^\+\+\+ b/(.+)$", part, re.MULTILINE)
             if not file_match:
                 # Try rename
-                rename_match = re.search(
-                    r'^rename (?:from|to) (.+)$', part, re.MULTILINE
-                )
+                rename_match = re.search(r"^rename (?:from|to) (.+)$", part, re.MULTILINE)
                 if rename_match:
                     file_path = rename_match.group(1)
                 else:
@@ -547,23 +554,23 @@ class SessionMemory:
                 file_path = file_match.group(1)
 
             # Count stat
-            lines_added = len(re.findall(r'^\+(?!\+\+)', part, re.MULTILINE))
-            lines_removed = len(re.findall(r'^-(?!--)', part, re.MULTILINE))
+            lines_added = len(re.findall(r"^\+(?!\+\+)", part, re.MULTILINE))
+            lines_removed = len(re.findall(r"^-(?!--)", part, re.MULTILINE))
             stat = f"+{lines_added}/-{lines_removed}"
 
-            results.append({
-                "file_path": file_path,
-                "stat": stat,
-                "diff_content": part,
-            })
+            results.append(
+                {
+                    "file_path": file_path,
+                    "stat": stat,
+                    "diff_content": part,
+                }
+            )
 
         return results
 
     # --- Scoring ---
 
-    def _score_and_rank(
-        self, query_vec: list[float], rows: list[tuple]
-    ) -> list[MemoryEntry]:
+    def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[MemoryEntry]:
         """Score chunks, group by session (top-2, prefer file_diff), rank."""
         dim = len(query_vec)
         scored = []  # (session_id, chunk_type, file_path, score, payload)
@@ -587,13 +594,18 @@ class SessionMemory:
             except (json.JSONDecodeError, TypeError):
                 payload = {}
 
-            scored.append((
-                session_id, chunk_type, file_path, score,
-                payload.get("request", ""),
-                payload.get("stat", ""),
-                commit_hash,
-                payload.get("diff", ""),
-            ))
+            scored.append(
+                (
+                    session_id,
+                    chunk_type,
+                    file_path,
+                    score,
+                    payload.get("request", ""),
+                    payload.get("stat", ""),
+                    commit_hash,
+                    payload.get("diff", ""),
+                )
+            )
 
         # Group by session_id
         by_session: dict[str, list] = {}
@@ -616,26 +628,26 @@ class SessionMemory:
             items.sort(key=_sort_key, reverse=True)
             picked = items[:2]
 
-            for (_sid, _ct, fpath, score, req, stat, chash, diff) in picked:
+            for _sid, _ct, fpath, score, req, stat, chash, diff in picked:
                 # diff_summary: first 4 non-empty lines of diff, ~120 chars
-                diff_lines = [
-                    l for l in (diff or "").split("\n") if l.strip()
-                ][:4]
+                diff_lines = [l for l in (diff or "").split("\n") if l.strip()][:4]
                 diff_summary = "\n".join(diff_lines)
 
-                entries.append(MemoryEntry(
-                    session_id=_sid,
-                    request=req,
-                    file_path=fpath,
-                    diff_summary=diff_summary,
-                    stat=stat,
-                    commit_hash=chash,
-                    score=score,
-                ))
+                entries.append(
+                    MemoryEntry(
+                        session_id=_sid,
+                        request=req,
+                        file_path=fpath,
+                        diff_summary=diff_summary,
+                        stat=stat,
+                        commit_hash=chash,
+                        score=score,
+                    )
+                )
 
         # Sort across sessions by best chunk score, take top max_entries
         entries.sort(key=lambda e: e.score, reverse=True)
-        return entries[:self.config.max_entries]
+        return entries[: self.config.max_entries]
 
     @staticmethod
     def _cosine_similarity(a, b) -> float:
@@ -699,11 +711,18 @@ class FakeStorage:
         results = []
         for i, c in enumerate(self._chunks[-limit:]):
             emb = c.get("embedding_bytes", b"")
-            results.append((
-                i, c.get("_sid", ""), c.get("_hash", ""),
-                c.get("chunk_type", ""), c.get("chunk_text", ""),
-                c.get("payload_json", "{}"), c.get("file_path", ""), emb,
-            ))
+            results.append(
+                (
+                    i,
+                    c.get("_sid", ""),
+                    c.get("_hash", ""),
+                    c.get("chunk_type", ""),
+                    c.get("chunk_text", ""),
+                    c.get("payload_json", "{}"),
+                    c.get("file_path", ""),
+                    emb,
+                )
+            )
         return results
 
     def delete_old_sessions(self, keep_count):
@@ -778,13 +797,16 @@ Binary files a/foo.png and b/foo.png differ
 class TestSessionMemoryChunking:
     @pytest.fixture
     def embedder(self):
-        return FakeEmbedder(dim=4, vectors={
-            "add JWT login": [1.0, 0.0, 0.0, 0.0],
-            "add JWT login\nFile: src/auth.py\nChanges: +3/-1": [0.9, 0.1, 0.0, 0.0],
-            "add JWT login\nFile: src/session.py\nChanges: +2/-0": [0.8, 0.0, 0.2, 0.0],
-            "unrelated task": [0.0, 0.0, 0.0, 1.0],
-            "unrelated task\nFile: other.py\nChanges: +1/-1": [0.0, 0.0, 0.0, 1.0],
-        })
+        return FakeEmbedder(
+            dim=4,
+            vectors={
+                "add JWT login": [1.0, 0.0, 0.0, 0.0],
+                "add JWT login\nFile: src/auth.py\nChanges: +3/-1": [0.9, 0.1, 0.0, 0.0],
+                "add JWT login\nFile: src/session.py\nChanges: +2/-0": [0.8, 0.0, 0.2, 0.0],
+                "unrelated task": [0.0, 0.0, 0.0, 1.0],
+                "unrelated task\nFile: other.py\nChanges: +1/-1": [0.0, 0.0, 0.0, 1.0],
+            },
+        )
 
     @pytest.fixture
     def storage(self):
@@ -805,34 +827,39 @@ class TestSessionMemoryChunking:
 
     def test_store_creates_request_and_file_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store(
+                "s1", "add JWT login", ["src/auth.py", "src/session.py"], SAMPLE_DIFF, "abc123"
+            )
+
         asyncio.run(run())
         assert len(storage._chunks) == 3  # 1 request + 2 file_diff
 
     def test_retrieve_finds_relevant_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             results = await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         assert len(results) >= 1
         assert results[0].request == "add JWT login"
 
     def test_unrelated_query_returns_empty(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("unrelated task")
+
         results = asyncio.run(run())
         assert results == []
 
     def test_session_grouping_top_2(self, sm, storage):
         """Same session should contribute at most 2 chunks."""
+
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py", "src/session.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store(
+                "s1", "add JWT login", ["src/auth.py", "src/session.py"], SAMPLE_DIFF, "abc123"
+            )
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         # 3 chunks total (1 request + 2 file), but at most 2 returned per session
         s1_results = [r for r in results if r.session_id == "s1"]
@@ -840,10 +867,11 @@ class TestSessionMemoryChunking:
 
     def test_file_diff_preferred_over_request(self, sm, storage):
         """When both match, file_diff chunks rank higher than request chunk."""
+
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         # At least one result should be a file_diff (non-empty file_path)
         has_file = any(r.file_path for r in results)
@@ -851,43 +879,47 @@ class TestSessionMemoryChunking:
 
     def test_eviction_on_store(self, sm, storage):
         sm.config.max_stored_entries = 3
+
         async def run():
             for i in range(5):
-                await sm.store(f"s{i}", f"task {i}", [],
-                               SAMPLE_DIFF, f"hash{i}")
+                await sm.store(f"s{i}", f"task {i}", [], SAMPLE_DIFF, f"hash{i}")
+
         asyncio.run(run())
         session_ids = set(c.get("_sid") for c in storage._chunks)
         assert len(session_ids) <= 3
 
     def test_continuation_replaces_old_chunks(self, sm, storage):
         async def run():
-            await sm.store("s1", "first commit", [],
-                           SAMPLE_DIFF, "hash1")
-            await sm.store("s1", "second commit", [],
-                           SAMPLE_DIFF, "hash2")
+            await sm.store("s1", "first commit", [], SAMPLE_DIFF, "hash1")
+            await sm.store("s1", "second commit", [], SAMPLE_DIFF, "hash2")
+
         asyncio.run(run())
         # Should have 3 chunks (1 request + 2 file_diff), not 6
         assert len(storage._chunks) == 3
 
     def test_store_skipped_when_disabled(self, sm, storage):
         sm.config.enabled = False
+
         async def run():
             await sm.store("s1", "test", [], SAMPLE_DIFF, "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 0
 
     def test_retrieve_skipped_when_disabled(self, sm, storage):
         sm.config.enabled = False
+
         async def run():
             return await sm.retrieve("test")
+
         results = asyncio.run(run())
         assert results == []
 
     def test_memory_entry_fields_populated(self, sm, storage):
         async def run():
-            await sm.store("s1", "add JWT login", ["src/auth.py"],
-                           SAMPLE_DIFF, "abc123")
+            await sm.store("s1", "add JWT login", ["src/auth.py"], SAMPLE_DIFF, "abc123")
             return await sm.retrieve("add JWT login")
+
         results = asyncio.run(run())
         assert len(results) >= 1
         entry = results[0]
@@ -897,8 +929,8 @@ class TestSessionMemoryChunking:
 
     def test_empty_diff_stores_request_chunk_only(self, sm, storage):
         async def run():
-            await sm.store("s1", "no files changed", [],
-                           "", "hash")
+            await sm.store("s1", "no files changed", [], "", "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 1
         assert storage._chunks[0]["chunk_type"] == "request"
@@ -909,9 +941,10 @@ class TestSessionMemoryChunking:
 index abc..def 100644
 Binary files a/img.png and b/img.png differ
 """
+
         async def run():
-            await sm.store("s1", "add image", [],
-                           bin_diff, "hash")
+            await sm.store("s1", "add image", [], bin_diff, "hash")
+
         asyncio.run(run())
         assert len(storage._chunks) == 1
         assert storage._chunks[0]["chunk_type"] == "request"
@@ -957,76 +990,70 @@ In `SessionMemory.__init__()`, after setting `self.config = config`, add:
 Then add the method to the class (before `store()`):
 
 ```python
-    def _migrate_if_needed(self) -> None:
-        """Idempotently migrate v1 session_embeddings to session_chunks.
+def _migrate_if_needed(self) -> None:
+    """Idempotently migrate v1 session_embeddings to session_chunks.
 
-        Uses PRAGMA user_version as migration gate:
-          0 = not migrated (or fresh DB), 1 = migration complete.
+    Uses PRAGMA user_version as migration gate:
+      0 = not migrated (or fresh DB), 1 = migration complete.
 
-        INSERT OR IGNORE with a temp unique index on (session_id, chunk_type)
-        guarantees crash-safe re-runs.
-        """
-        try:
-            conn = self._storage._get_conn()
-        except AttributeError:
-            return  # FakeStorage in tests — skip
+    INSERT OR IGNORE with a temp unique index on (session_id, chunk_type)
+    guarantees crash-safe re-runs.
+    """
+    try:
+        conn = self._storage._get_conn()
+    except AttributeError:
+        return  # FakeStorage in tests — skip
 
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version >= 1:
-            return
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= 1:
+        return
 
-        # Check old table exists
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='session_embeddings'"
-        ).fetchone()
-        if not exists:
-            conn.execute("PRAGMA user_version = 1")
-            conn.commit()
-            return
+    # Check old table exists
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='session_embeddings'"
+    ).fetchone()
+    if not exists:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        return
 
-        logger.info("Migrating v1 session_embeddings to session_chunks...")
-        try:
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_migration "
-                "ON session_chunks(session_id, chunk_type)"
-            )
-            conn.execute(
-                """INSERT OR IGNORE INTO session_chunks
-                   (session_id, chunk_type, chunk_text, payload_json,
-                    embedding, created_at)
-                   SELECT
-                       session_id,
-                       'request',
-                       request,
-                       json_object(
-                           'request', request,
-                           'files', files_json,
-                           'migrated', json('true')
-                       ),
-                       embedding,
-                       created_at
-                   FROM session_embeddings"""
-            )
-            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
-            conn.execute("PRAGMA user_version = 1")
-            conn.commit()
-            count = conn.execute(
-                "SELECT COUNT(*) FROM session_chunks"
-            ).fetchone()[0]
-            logger.info(
-                "Migration complete: %d chunks in session_chunks", count
-            )
-        except Exception:
-            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
-            conn.rollback()
-            logger.warning(
-                "Migration from session_embeddings failed; "
-                "session memory will start with empty chunks",
-                exc_info=True,
-            )
-            conn.execute("PRAGMA user_version = 1")
-            conn.commit()
+    logger.info("Migrating v1 session_embeddings to session_chunks...")
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_migration "
+            "ON session_chunks(session_id, chunk_type)"
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO session_chunks
+               (session_id, chunk_type, chunk_text, payload_json,
+                embedding, created_at)
+               SELECT
+                   session_id,
+                   'request',
+                   request,
+                   json_object(
+                       'request', request,
+                       'files', files_json,
+                       'migrated', json('true')
+                   ),
+                   embedding,
+                   created_at
+               FROM session_embeddings"""
+        )
+        conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM session_chunks").fetchone()[0]
+        logger.info("Migration complete: %d chunks in session_chunks", count)
+    except Exception:
+        conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+        conn.rollback()
+        logger.warning(
+            "Migration from session_embeddings failed; session memory will start with empty chunks",
+            exc_info=True,
+        )
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
 ```
 
 - [ ] **Step 2: Add migration tests to `tests/test_session_memory.py`**
@@ -1040,6 +1067,7 @@ class TestMigration:
     @pytest.fixture
     def real_sqlite_storage(self, tmp_path):
         import sqlite3
+
         db_path = str(tmp_path / "test_migrate.db")
         conn = sqlite3.connect(db_path)
         conn.execute("""
@@ -1078,10 +1106,12 @@ class TestMigration:
         conn.close()
 
         from live_edit.storage import SQLiteStorage
+
         return SQLiteStorage(db_path)
 
     def test_migration_copies_old_data(self, real_sqlite_storage):
         from live_edit.embedder import LocalEmbedder
+
         storage = real_sqlite_storage
         assert storage.get_db_version() == 0
 
@@ -1129,6 +1159,7 @@ class TestMigration:
 
     def test_migration_skips_when_no_old_table(self, tmp_path):
         import sqlite3
+
         db_path = str(tmp_path / "test_fresh.db")
         conn = sqlite3.connect(db_path)
         conn.execute("""
@@ -1148,6 +1179,7 @@ class TestMigration:
         conn.close()
 
         from live_edit.storage import SQLiteStorage
+
         storage = SQLiteStorage(db_path)
         assert storage.get_db_version() == 0
 
@@ -1197,18 +1229,18 @@ git commit -m "feat: add idempotent v1-to-chunk migration with PRAGMA user_versi
 In `engine.py`, replace the `sm.store()` call at lines 415-422:
 
 ```python
-        sm = getattr(session, '_session_memory', None)
-        if sm is not None:
-            try:
-                await sm.store(
-                    session_id=session.id,
-                    request=session.request,
-                    files=session._modified_files,
-                    diff=getattr(session, '_cached_diff', ''),
-                    commit_hash=session._commit_hash,
-                )
-            except Exception as e:
-                logger.warning("Failed to store session memory: %s", e)
+sm = getattr(session, "_session_memory", None)
+if sm is not None:
+    try:
+        await sm.store(
+            session_id=session.id,
+            request=session.request,
+            files=session._modified_files,
+            diff=getattr(session, "_cached_diff", ""),
+            commit_hash=session._commit_hash,
+        )
+    except Exception as e:
+        logger.warning("Failed to store session memory: %s", e)
 ```
 
 - [ ] **Step 2: Update `_format_memory_context()` for new `MemoryEntry` fields and compact format**
@@ -1226,8 +1258,7 @@ def _format_memory_context(memories: list, template: str = "") -> str:
             items = []
             for i, m in enumerate(memories, 1):
                 items.append(
-                    template
-                    .replace("{index}", str(i))
+                    template.replace("{index}", str(i))
                     .replace("{request}", m.request)
                     .replace("{file}", m.file_path or "(request)")
                     .replace("{diff_summary}", m.diff_summary or "")
@@ -1271,10 +1302,13 @@ class TestFormatMemoryContext:
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Fix auth",
+                session_id="s1",
+                request="Fix auth",
                 file_path="auth.py",
                 diff_summary="+import jwt\n+def login():",
-                stat="+3/-1", commit_hash="abc", score=0.95,
+                stat="+3/-1",
+                commit_hash="abc",
+                score=0.95,
             ),
         ]
         result = _format_memory_context(memories)
@@ -1289,10 +1323,13 @@ class TestFormatMemoryContext:
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Fix auth",
+                session_id="s1",
+                request="Fix auth",
                 file_path="auth.py",
                 diff_summary="+import jwt",
-                stat="+3/-1", commit_hash="abc", score=0.95,
+                stat="+3/-1",
+                commit_hash="abc",
+                score=0.95,
             ),
         ]
         template = "[{index}] {request} {file} {stat} {score}"
@@ -1305,9 +1342,13 @@ class TestFormatMemoryContext:
 
         memories = [
             MemoryEntry(
-                session_id="s1", request="Some query",
-                file_path="", diff_summary="", stat="",
-                commit_hash="", score=0.80,
+                session_id="s1",
+                request="Some query",
+                file_path="",
+                diff_summary="",
+                stat="",
+                commit_hash="",
+                score=0.80,
             ),
         ]
         result = _format_memory_context(memories)
@@ -1315,6 +1356,7 @@ class TestFormatMemoryContext:
 
     def test_empty_memories(self):
         from live_edit.engine import _format_memory_context
+
         result = _format_memory_context([])
         assert "Relevant" in result
         assert "Use the above" in result
@@ -1347,8 +1389,12 @@ class TestSessionMemoryEngineIntegration:
         ]
 
         await run_edit_session(
-            session=session, provider=mock_provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
+            session=session,
+            provider=mock_provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
             tool_registry=mock_registry,
         )
         assert True  # Should complete without errors

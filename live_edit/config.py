@@ -3,14 +3,16 @@
 import json
 import os
 import re
-try:
+import sys
+
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:
+else:
     import tomli as tomllib
 from dataclasses import dataclass, field
 
-
 # ── Data models ──
+
 
 @dataclass
 class ModePromptConfig:
@@ -22,8 +24,8 @@ class ModePromptConfig:
 @dataclass
 class ModeConfig:
     label: str = ""
-    approval: str = "per_tool"    # "per_tool" | "final" | "none"
-    tools: str = "write"          # "all" | "write" | "readonly"
+    approval: str = "per_tool"  # "per_tool" | "final" | "none"
+    tools: str = "write"  # "all" | "write" | "readonly"
     approve_for: list[str] = field(default_factory=lambda: ["edit_file", "write_file"])
     prompt: ModePromptConfig = field(default_factory=ModePromptConfig)
 
@@ -44,10 +46,21 @@ class SafetyConfig:
     )
     allow_overwrite_existing: bool = False
     blocked_commands: list[str] = field(default_factory=list)
-    search_extensions: list[str] = field(default_factory=lambda: [
-        "*.py", "*.html", "*.js", "*.css", "*.ts", "*.tsx",
-        "*.md", "*.json", "*.toml", "*.yaml", "*.yml",
-    ])
+    search_extensions: list[str] = field(
+        default_factory=lambda: [
+            "*.py",
+            "*.html",
+            "*.js",
+            "*.css",
+            "*.ts",
+            "*.tsx",
+            "*.md",
+            "*.json",
+            "*.toml",
+            "*.yaml",
+            "*.yml",
+        ]
+    )
 
 
 @dataclass
@@ -85,7 +98,9 @@ class PreviewConfig:
 class EvaluationConfig:
     enabled: bool = False
     max_retries: int = 3
-    stages: list[str] = field(default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"])
+    stages: list[str] = field(
+        default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"]
+    )
     test_command: str = ""
     lint_command: str = ""
     screenshot: bool = False
@@ -148,6 +163,7 @@ class Config:
 
 
 # ── TOML parsing ──
+
 
 def _parse_safety(data: dict) -> SafetyConfig:
     return SafetyConfig(
@@ -298,6 +314,7 @@ def parse_config(path: str) -> Config:
 
 # ── Validation ──
 
+
 def validate_config(config: Config) -> list[str]:
     """Return list of validation error messages. Empty list = valid."""
     errors = []
@@ -320,6 +337,7 @@ def validate_config(config: Config) -> list[str]:
 
 
 # ── Project detection ──
+
 
 def detect_project(root: str) -> dict:
     """Auto-detect project metadata from filesystem. Returns dict of key facts."""

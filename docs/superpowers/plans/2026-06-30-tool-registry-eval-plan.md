@@ -26,27 +26,94 @@ import re
 
 # ── Dangerous command patterns (blocked for run_shell) ──
 _DANGEROUS_CMDS = [
-    r'\brm\b', r'\bgit\s+rm\b', r'\bunlink\b',
-    r'\bdrop\s+table\b', r'\bdelete\s+from\b',
-    r'\bgit\s+push\b', r'\bgit\s+reset\s+--hard\b', r'\bshutdown\b', r'\breboot\b',
-    r'\bchmod\s+777\b', r'\b>.*\.\.\/', r'\bcurl.*\|\s*bash\b', r'\bwget.*\|\s*sh\b',
-    r'\bmkfs\.', r'\bdd\s+if=', r'\bformat\s+[A-Z]:', r':\(\)\s*\{', r'\\x[0-9a-f]{2}',
-    r'\$\(', r'`', r'\beval\b', r'\bexec\b', r'\bsudo\b', r'>\s*/dev/sd',
+    r"\brm\b",
+    r"\bgit\s+rm\b",
+    r"\bunlink\b",
+    r"\bdrop\s+table\b",
+    r"\bdelete\s+from\b",
+    r"\bgit\s+push\b",
+    r"\bgit\s+reset\s+--hard\b",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\bchmod\s+777\b",
+    r"\b>.*\.\.\/",
+    r"\bcurl.*\|\s*bash\b",
+    r"\bwget.*\|\s*sh\b",
+    r"\bmkfs\.",
+    r"\bdd\s+if=",
+    r"\bformat\s+[A-Z]:",
+    r":\(\)\s*\{",
+    r"\\x[0-9a-f]{2}",
+    r"\$\(",
+    r"`",
+    r"\beval\b",
+    r"\bexec\b",
+    r"\bsudo\b",
+    r">\s*/dev/sd",
 ]
-_DANGEROUS_RE = re.compile('|'.join(_DANGEROUS_CMDS), re.IGNORECASE)
+_DANGEROUS_RE = re.compile("|".join(_DANGEROUS_CMDS), re.IGNORECASE)
 
 # ── Safe commands (common dev tools that bypass danger checks) ──
 _SAFE_PREFIXES = [
-    'git status', 'git diff', 'git log', 'git show', 'git branch', 'git stash',
-    'git add ', 'git commit ', 'git checkout ', 'git merge ', 'git rebase',
-    'ls ', 'ls\n', 'cat ', 'head ', 'tail ', 'find ', 'grep ',
-    'wc ', 'sort ', 'uniq ', 'cut ', 'sed ', 'awk ',
-    'pwd', 'which ', 'python ', 'python3 ', 'node ', 'npm ', 'npx ',
-    'pytest', 'ruff ', 'black ', 'mypy ', 'pip ', 'poetry ', 'cargo ', 'go ',
-    'make ', 'tree ', 'du ', 'date', 'env', 'stat ', 'file ', 'echo ', 'printf ',
-    'mkdir ', 'cp ', 'mv ', 'touch ',
-    'whoami', 'printenv', 'md5sum', 'sha256sum', 'sha1sum',
-    'curl ', 'wget ',
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "git stash",
+    "git add ",
+    "git commit ",
+    "git checkout ",
+    "git merge ",
+    "git rebase",
+    "ls ",
+    "ls\n",
+    "cat ",
+    "head ",
+    "tail ",
+    "find ",
+    "grep ",
+    "wc ",
+    "sort ",
+    "uniq ",
+    "cut ",
+    "sed ",
+    "awk ",
+    "pwd",
+    "which ",
+    "python ",
+    "python3 ",
+    "node ",
+    "npm ",
+    "npx ",
+    "pytest",
+    "ruff ",
+    "black ",
+    "mypy ",
+    "pip ",
+    "poetry ",
+    "cargo ",
+    "go ",
+    "make ",
+    "tree ",
+    "du ",
+    "date",
+    "env",
+    "stat ",
+    "file ",
+    "echo ",
+    "printf ",
+    "mkdir ",
+    "cp ",
+    "mv ",
+    "touch ",
+    "whoami",
+    "printenv",
+    "md5sum",
+    "sha256sum",
+    "sha1sum",
+    "curl ",
+    "wget ",
 ]
 
 
@@ -63,7 +130,7 @@ def check_shell_cmd(cmd: str, project_root: str = "") -> str | None:
     """Return error message if cmd is dangerous, None if ok."""
     cmd_stripped = cmd.strip()
 
-    if re.search(r'\bcurl\b.*\|', cmd_stripped) or re.search(r'\bwget\b.*\|', cmd_stripped):
+    if re.search(r"\bcurl\b.*\|", cmd_stripped) or re.search(r"\bwget\b.*\|", cmd_stripped):
         return f"命令包含危险操作，已阻止: {cmd_stripped}"
 
     is_safe = any(
@@ -163,15 +230,16 @@ logger = logging.getLogger("live-edit.tool-registry")
 @dataclass
 class ToolDef:
     """Definition of a single tool."""
+
     name: str
     description: str
     input_schema: dict
     execute: Callable[[dict, str, object], Awaitable[dict]]
-    modes: list[str] | None = None       # None = all modes
+    modes: list[str] | None = None  # None = all modes
     is_write: bool = False
     require_approval: bool = False
     timeout: int = 30
-    priority: int = 0                     # higher = wins on name collision
+    priority: int = 0  # higher = wins on name collision
 
     def to_anthropic_schema(self) -> dict:
         return {
@@ -244,7 +312,8 @@ class DefaultToolRegistry(ToolRegistry):
 
     def get_write_tool_names(self, mode: str) -> set[str]:
         return {
-            t.name for t in self._tools.values()
+            t.name
+            for t in self._tools.values()
             if t.visible_in_mode(mode) and (t.is_write or t.require_approval)
         }
 
@@ -262,6 +331,7 @@ class DefaultToolRegistry(ToolRegistry):
             return {"ok": False, "error": f"工具 {name} 执行超时"}
         except Exception as e:
             import traceback
+
             logger.error("Tool %s error: %s\n%s", name, e, traceback.format_exc())
             return {"ok": False, "error": str(e)}
 
@@ -273,17 +343,20 @@ class DefaultToolRegistry(ToolRegistry):
     def load_builtin_tools(self):
         """Import and register all tools from live_edit.builtin_tools."""
         from . import builtin_tools
+
         for mod in builtin_tools.ALL_MODULES:
             tool_def = mod.create()
-            tool_def.priority = 10   # built-in priority
+            tool_def.priority = 10  # built-in priority
             self.register(tool_def)
 
     def load_toml_tools(self, config):
         """Parse [[tools]] sections from config and register shell-based tools."""
-        if not config or not hasattr(config, 'toml_tools'):
+        if not config or not hasattr(config, "toml_tools"):
             return
         from .safety import check_shell_cmd
+
         for t in config.toml_tools:
+
             async def _make_execute(cmd, timeout):
                 async def _exec(args, project_root, cfg):
                     # Substitute {args.xxx} placeholders
@@ -295,14 +368,23 @@ class DefaultToolRegistry(ToolRegistry):
                         return {"ok": False, "error": err}
                     try:
                         result = subprocess.run(
-                            resolved, shell=True, capture_output=True, text=True,
-                            timeout=timeout, cwd=project_root,
+                            resolved,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout,
+                            cwd=project_root,
                         )
                         output = (result.stdout + result.stderr)[:5000]
-                        return {"ok": True, "cmd": resolved, "output": output,
-                                "exit_code": result.returncode}
+                        return {
+                            "ok": True,
+                            "cmd": resolved,
+                            "output": output,
+                            "exit_code": result.returncode,
+                        }
                     except subprocess.TimeoutExpired:
                         return {"ok": False, "error": "命令执行超时"}
+
                 return _exec
 
             tool_def = ToolDef(
@@ -353,8 +435,14 @@ def set_global_registry(registry: DefaultToolRegistry):
     _global_registry = registry
 
 
-def tool(name: str, description: str, modes: list[str] | None = None,
-         is_write: bool = False, require_approval: bool = False, timeout: int = 30):
+def tool(
+    name: str,
+    description: str,
+    modes: list[str] | None = None,
+    is_write: bool = False,
+    require_approval: bool = False,
+    timeout: int = 30,
+):
     """Decorator to register a Python function as a tool in the global registry.
 
     Usage:
@@ -362,6 +450,7 @@ def tool(name: str, description: str, modes: list[str] | None = None,
         async def my_tool(args, project_root, config):
             return {"ok": True}
     """
+
     def deco(fn):
         td = ToolDef(
             name=name,
@@ -383,6 +472,7 @@ def tool(name: str, description: str, modes: list[str] | None = None,
         if _global_registry is not None:
             _global_registry.register(td)
         return fn
+
     return deco
 ```
 
@@ -478,16 +568,24 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     pattern = args["pattern"]
     search_path = safe_path(args.get("path", "."), project_root)
     exts = []
-    if config and hasattr(config, 'safety') and hasattr(config.safety, 'search_extensions'):
+    if config and hasattr(config, "safety") and hasattr(config.safety, "search_extensions"):
         for ext in config.safety.search_extensions:
             exts += ["--include", ext]
     if not exts:
-        exts = ["--include=*.py", "--include=*.html", "--include=*.js",
-                "--include=*.css", "--include=*.md"]
+        exts = [
+            "--include=*.py",
+            "--include=*.html",
+            "--include=*.js",
+            "--include=*.css",
+            "--include=*.md",
+        ]
     try:
         result = subprocess.run(
             ["grep", "-rn"] + exts + [pattern, search_path],
-            capture_output=True, text=True, timeout=10, cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=project_root,
         )
         output = result.stdout[:5000] if result.stdout else "(无匹配)"
         count = len(result.stdout.strip().split("\n")) if result.stdout.strip() else 0
@@ -532,8 +630,7 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
             if m.is_file():
                 rel = str(m.relative_to(project_root))
                 files.append(rel)
-        return {"ok": True, "pattern": pattern, "files": files[:50],
-                "match_count": len(files)}
+        return {"ok": True, "pattern": pattern, "files": files[:50], "match_count": len(files)}
     except Exception as e:
         return {"ok": False, "error": f"glob 失败: {e}"}
 
@@ -579,19 +676,25 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
                     size = entry.stat().st_size if entry.is_file() else 0
                 except OSError:
                     size = 0
-                entries.append({
-                    "name": entry.name,
-                    "is_dir": entry.is_dir(),
-                    "size_bytes": size if entry.is_file() else 0,
-                })
+                entries.append(
+                    {
+                        "name": entry.name,
+                        "is_dir": entry.is_dir(),
+                        "size_bytes": size if entry.is_file() else 0,
+                    }
+                )
                 if entry.is_dir():
                     total_dirs += 1
                 else:
                     total_files += 1
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-        return {"ok": True, "path": args.get("path", "."),
-                "entries": entries[:100], "total_files": total_files,
-                "total_dirs": total_dirs}
+        return {
+            "ok": True,
+            "path": args.get("path", "."),
+            "entries": entries[:100],
+            "total_files": total_files,
+            "total_dirs": total_dirs,
+        }
     except PermissionError:
         return {"ok": False, "error": "无权限访问该目录"}
 
@@ -603,7 +706,10 @@ def create() -> ToolDef:
         input_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "相对于项目根目录的路径，默认为项目根目录"},
+                "path": {
+                    "type": "string",
+                    "description": "相对于项目根目录的路径，默认为项目根目录",
+                },
             },
             "required": [],
         },
@@ -638,8 +744,8 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
         return {"ok": True, "path": args["path"], "modified": True}
 
     if count == 0:
-        norm_old = re.sub(r'\s+', ' ', old).strip()
-        norm_content = re.sub(r'\s+', ' ', content)
+        norm_old = re.sub(r"\s+", " ", old).strip()
+        norm_content = re.sub(r"\s+", " ", content)
         norm_positions = []
         pos = 0
         while True:
@@ -652,41 +758,53 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
         if len(norm_positions) == 0:
             head_lines = content.strip().split("\n")[:3]
             head_preview = "\n".join(head_lines)[:200]
-            return {"ok": False, "error":
-                f"old_string 在文件中未找到。文件开头预览:\n{head_preview}"}
+            return {
+                "ok": False,
+                "error": f"old_string 在文件中未找到。文件开头预览:\n{head_preview}",
+            }
 
         if len(norm_positions) == 1:
-            norm_line_start = norm_content.rfind('\n', 0, norm_positions[0]) + 1
-            norm_line_end = norm_content.find('\n', norm_positions[0] + len(norm_old))
-            orig_match = content[norm_line_start:norm_line_end if norm_line_end != -1 else len(content)]
+            norm_line_start = norm_content.rfind("\n", 0, norm_positions[0]) + 1
+            norm_line_end = norm_content.find("\n", norm_positions[0] + len(norm_old))
+            orig_match = content[
+                norm_line_start : norm_line_end if norm_line_end != -1 else len(content)
+            ]
             new_content = content.replace(orig_match, new, 1)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new_content)
-            return {"ok": True, "path": args["path"], "modified": True,
-                    "matched_via": "whitespace_normalized"}
+            return {
+                "ok": True,
+                "path": args["path"],
+                "modified": True,
+                "matched_via": "whitespace_normalized",
+            }
 
         line_info = []
         for pos in norm_positions[:5]:
-            lineno = norm_content[:pos].count('\n') + 1
-            snippet = norm_content[pos:pos + len(norm_old) + 40] + "..."
+            lineno = norm_content[:pos].count("\n") + 1
+            snippet = norm_content[pos : pos + len(norm_old) + 40] + "..."
             line_info.append(f"  L{lineno}: ...{snippet}")
-        return {"ok": False, "error":
-            f"old_string 模糊匹配了 {len(norm_positions)} 处（仅空白差异），请提供更多上下文:\n" +
-            "\n".join(line_info)}
+        return {
+            "ok": False,
+            "error": f"old_string 模糊匹配了 {len(norm_positions)} 处（仅空白差异），请提供更多上下文:\n"
+            + "\n".join(line_info),
+        }
 
     if count > 1:
         line_info = []
         for m in re.finditer(re.escape(old), content):
             if len(line_info) >= 5:
                 break
-            lineno = content[:m.start()].count('\n') + 1
+            lineno = content[: m.start()].count("\n") + 1
             ctx_start = max(0, m.start() - 20)
             ctx_end = min(len(content), m.end() + 40)
-            snippet = content[ctx_start:ctx_end].replace('\n', '\\n') + "..."
+            snippet = content[ctx_start:ctx_end].replace("\n", "\\n") + "..."
             line_info.append(f"  L{lineno}: ...{snippet}")
-        return {"ok": False, "error":
-            f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n" +
-            "\n".join(line_info)}
+        return {
+            "ok": False,
+            "error": f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n"
+            + "\n".join(line_info),
+        }
 
 
 def create() -> ToolDef:
@@ -697,7 +815,10 @@ def create() -> ToolDef:
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "相对于项目根目录的文件路径"},
-                "old_string": {"type": "string", "description": "要替换的原始字符串（必须精确匹配）"},
+                "old_string": {
+                    "type": "string",
+                    "description": "要替换的原始字符串（必须精确匹配）",
+                },
                 "new_string": {"type": "string", "description": "替换后的新字符串"},
                 "reason": {"type": "string", "description": "修改原因（向用户解释）"},
             },
@@ -723,9 +844,9 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     path = safe_path(args["path"], project_root)
     overwrite_dirs = None
     allow_overwrite = False
-    if config and hasattr(config, 'safety'):
-        overwrite_dirs = getattr(config.safety, 'overwrite_allowed_dirs', None)
-        allow_overwrite = getattr(config.safety, 'allow_overwrite_existing', False)
+    if config and hasattr(config, "safety"):
+        overwrite_dirs = getattr(config.safety, "overwrite_allowed_dirs", None)
+        allow_overwrite = getattr(config.safety, "allow_overwrite_existing", False)
     err = check_write_allowed(args["path"], project_root, allow_overwrite, overwrite_dirs)
     if err:
         return {"ok": False, "error": err}
@@ -770,12 +891,16 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     if err:
         return {"ok": False, "error": err}
     timeout = 30
-    if config and hasattr(config, 'timeouts'):
-        timeout = getattr(config.timeouts, 'shell_command', 30)
+    if config and hasattr(config, "timeouts"):
+        timeout = getattr(config.timeouts, "shell_command", 30)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=project_root,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:5000]
         return {"ok": True, "cmd": cmd, "output": output, "exit_code": result.returncode}
@@ -840,9 +965,14 @@ Add backward-compat re-exports that delegate to a module-level registry referenc
 New code should use live_edit.tool_registry directly.
 """
 
-from .safety import safe_path as _safe_path, check_shell_cmd as _check_shell_cmd, check_write_allowed as _check_write_allowed
+from .safety import (
+    safe_path as _safe_path,
+    check_shell_cmd as _check_shell_cmd,
+    check_write_allowed as _check_write_allowed,
+)
 
 # ── Formatting helpers (still used by engine.py for SSE events) ──
+
 
 def _trunc(s: str | None, n: int = 80) -> str:
     s = str(s or "")
@@ -894,7 +1024,7 @@ def _summarize_thinking(text: str, max_chars: int = 300) -> str:
     for sep in ("\n\n", "\n", "。", "！", "？", "；"):
         pos = chunk.rfind(sep)
         if pos > max_chars * 0.5:
-            return chunk[:pos + len(sep)] + "…"
+            return chunk[: pos + len(sep)] + "…"
     last_space = chunk.rfind(" ")
     if last_space > max_chars * 0.5:
         return chunk[:last_space] + "…"
@@ -905,9 +1035,11 @@ def _summarize_thinking(text: str, max_chars: int = 300) -> str:
 
 _registry = None
 
+
 def _set_registry(registry):
     global _registry
     _registry = registry
+
 
 TOOLS = []
 QA_TOOLS = []
@@ -962,7 +1094,9 @@ Add after `PreviewConfig` in config.py:
 class EvaluationConfig:
     enabled: bool = False
     max_retries: int = 3
-    stages: list[str] = field(default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"])
+    stages: list[str] = field(
+        default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"]
+    )
     test_command: str = ""
     lint_command: str = ""
     screenshot: bool = False
@@ -1070,7 +1204,7 @@ class EvalResult:
 
 def _detect_lint_cmd(project_root: str, config) -> str:
     """Auto-detect lint command from project type."""
-    if config and hasattr(config, 'evaluation') and config.evaluation.lint_command:
+    if config and hasattr(config, "evaluation") and config.evaluation.lint_command:
         return config.evaluation.lint_command
     if os.path.exists(os.path.join(project_root, "pyproject.toml")):
         return "python -m py_compile $(git diff --cached --name-only --diff-filter=ACM '*.py' 2>/dev/null) 2>&1 || echo 'no .py changes'"
@@ -1083,7 +1217,7 @@ def _detect_lint_cmd(project_root: str, config) -> str:
 
 def _detect_test_cmd(project_root: str, config) -> str:
     """Auto-detect test command from project type."""
-    if config and hasattr(config, 'evaluation') and config.evaluation.test_command:
+    if config and hasattr(config, "evaluation") and config.evaluation.test_command:
         return config.evaluation.test_command
     if os.path.exists(os.path.join(project_root, "pyproject.toml")):
         return "pytest -x --tb=short 2>&1 || echo 'no tests'"
@@ -1098,8 +1232,12 @@ async def _run_stage_lint(project_root: str, config) -> dict:
     cmd = _detect_lint_cmd(project_root, config)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=60, cwd=project_root,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:2000]
         passed = result.returncode == 0
@@ -1112,8 +1250,12 @@ async def _run_stage_test(project_root: str, config) -> dict:
     cmd = _detect_test_cmd(project_root, config)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=120, cwd=project_root,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:3000]
         passed = result.returncode == 0
@@ -1130,32 +1272,39 @@ async def _run_stage_preview(preview_url: str) -> dict:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(health_url)
             passed = r.status_code == 200
-            return {"ok": passed, "output": f"Health check: {r.status_code}", "status_code": r.status_code}
+            return {
+                "ok": passed,
+                "output": f"Health check: {r.status_code}",
+                "status_code": r.status_code,
+            }
     except httpx.ConnectError:
         return {"ok": False, "output": "Preview server not reachable"}
     except Exception as e:
         return {"ok": False, "output": f"Preview check failed: {e}"}
 
 
-async def _run_stage_introspect(
-    provider, user_request: str, diff: str, thinking: str = ""
-) -> dict:
+async def _run_stage_introspect(provider, user_request: str, diff: str, thinking: str = "") -> dict:
     """Ask the LLM whether the changes achieved the user's goal."""
     messages = [
-        {"role": "user", "content": (
-            "你是一个代码审查助手。用户的需求是：\n"
-            f"{user_request}\n\n"
-            "AI 进行了以下代码修改（diff）：\n"
-            f"```diff\n{diff[:4000]}\n```\n\n"
-            "请判断：这些修改是否达成了用户的目标？有没有遗漏或错误？\n"
-            "请用中文简短回答。如果达成目标，第一行写「评估结果: 通过」。"
-            "如果有问题，第一行写「评估结果: 未通过」，然后列出具体问题。"
-        )},
+        {
+            "role": "user",
+            "content": (
+                "你是一个代码审查助手。用户的需求是：\n"
+                f"{user_request}\n\n"
+                "AI 进行了以下代码修改（diff）：\n"
+                f"```diff\n{diff[:4000]}\n```\n\n"
+                "请判断：这些修改是否达成了用户的目标？有没有遗漏或错误？\n"
+                "请用中文简短回答。如果达成目标，第一行写「评估结果: 通过」。"
+                "如果有问题，第一行写「评估结果: 未通过」，然后列出具体问题。"
+            ),
+        },
     ]
     try:
         content_blocks = await provider.call_with_tools(
-            messages=messages, tools=[],
-            on_thinking=None, on_text=None,
+            messages=messages,
+            tools=[],
+            on_thinking=None,
+            on_text=None,
         )
         if not content_blocks:
             return {"ok": True, "output": "Introspection skipped (no LLM response)"}
@@ -1170,7 +1319,9 @@ async def _run_stage_introspect(
 
 
 async def _run_stage_html_diff(
-    preview_url: str, pages: list[str], worktree_path: str,
+    preview_url: str,
+    pages: list[str],
+    worktree_path: str,
 ) -> dict:
     """Fetch pages via preview and compare HTML structure."""
     if not preview_url or not pages:
@@ -1185,19 +1336,21 @@ async def _run_stage_html_diff(
                 if r.status_code == 200:
                     html = r.text
                     # Basic DOM statistics
-                    tag_count = len(re.findall(r'<\w+', html))
-                    div_count = len(re.findall(r'<div[\s>]', html))
-                    script_count = len(re.findall(r'<script[\s>]', html))
-                    has_body = '<body' in html.lower()
-                    results.append({
-                        "page": page,
-                        "ok": True,
-                        "tag_count": tag_count,
-                        "div_count": div_count,
-                        "script_count": script_count,
-                        "html_size": len(html),
-                        "has_body": has_body,
-                    })
+                    tag_count = len(re.findall(r"<\w+", html))
+                    div_count = len(re.findall(r"<div[\s>]", html))
+                    script_count = len(re.findall(r"<script[\s>]", html))
+                    has_body = "<body" in html.lower()
+                    results.append(
+                        {
+                            "page": page,
+                            "ok": True,
+                            "tag_count": tag_count,
+                            "div_count": div_count,
+                            "script_count": script_count,
+                            "html_size": len(html),
+                            "has_body": has_body,
+                        }
+                    )
                 else:
                     results.append({"page": page, "ok": False, "status": r.status_code})
         except Exception as e:
@@ -1223,7 +1376,7 @@ async def run_evaluation_pipeline(
     Returns EvalResult. Does NOT handle retries — that's done in engine.py
     to avoid circular imports.
     """
-    stages = config.evaluation.stages if hasattr(config, 'evaluation') else []
+    stages = config.evaluation.stages if hasattr(config, "evaluation") else []
     if not stages:
         return EvalResult(passed=True, report="Evaluation disabled")
 
@@ -1232,10 +1385,11 @@ async def run_evaluation_pipeline(
         "test": lambda: _run_stage_test(session._worktree_path, config),
         "preview": lambda: _run_stage_preview(session._preview_url),
         "introspect": lambda: _run_stage_introspect(
-            provider, session.request, getattr(session, '_cached_diff', '')),
+            provider, session.request, getattr(session, "_cached_diff", "")
+        ),
         "html_diff": lambda: _run_stage_html_diff(
             session._preview_url,
-            config.evaluation.preview_pages if hasattr(config, 'evaluation') else ["/"],
+            config.evaluation.preview_pages if hasattr(config, "evaluation") else ["/"],
             session._worktree_path,
         ),
     }
@@ -1260,8 +1414,12 @@ async def run_evaluation_pipeline(
         if result.get("ok"):
             session.emit("eval_stage", stage=stage_name, status="passed")
         else:
-            session.emit("eval_stage", stage=stage_name, status="failed",
-                        error=result.get("output", "")[:500])
+            session.emit(
+                "eval_stage",
+                stage=stage_name,
+                status="failed",
+                error=result.get("output", "")[:500],
+            )
             failed_stage = stage_name
             failed_output = result.get("output", "")
             break  # stop at first failure
@@ -1318,7 +1476,15 @@ git commit -m "feat: add evaluation pipeline with 5 stages and retry loop"
 
 Replace:
 ```python
-from .tools import TOOLS, QA_TOOLS, _WRITE_TOOLS, execute_tool, get_mode_tools, _tool_summary, _summarize_thinking
+from .tools import (
+    TOOLS,
+    QA_TOOLS,
+    _WRITE_TOOLS,
+    execute_tool,
+    get_mode_tools,
+    _tool_summary,
+    _summarize_thinking,
+)
 ```
 
 With:
@@ -1341,24 +1507,23 @@ tools = tool_registry.get_tools(mode) if tool_registry else []
 
 Replace the write-tool check:
 ```python
-needs_approval = (
-    mode == "quick"
-    and tool_name in _WRITE_TOOLS
-)
+needs_approval = mode == "quick" and tool_name in _WRITE_TOOLS
 ```
 With:
 ```python
 tool_def = tool_registry.get_tool(tool_name) if tool_registry else None
 needs_approval = (
-    mode == "quick"
-    and tool_def is not None
-    and (tool_def.is_write or tool_def.require_approval)
+    mode == "quick" and tool_def is not None and (tool_def.is_write or tool_def.require_approval)
 )
 ```
 
 Replace `await execute_tool(...)` with:
 ```python
-exec_result = await tool_registry.execute(tool_name, tool_input, _root, config) if tool_registry else {"ok": False, "error": "No tool registry"}
+exec_result = (
+    await tool_registry.execute(tool_name, tool_input, _root, config)
+    if tool_registry
+    else {"ok": False, "error": "No tool registry"}
+)
 ```
 
 - [ ] **Step 3: Add evaluation pipeline call with retry loop**
@@ -1367,7 +1532,12 @@ After the `while round_num < max_rounds:` loop (around line 596), before the dif
 
 ```python
 # ── Evaluation pipeline (with retry loop) ──
-if config and hasattr(config, 'evaluation') and config.evaluation.enabled and session._modified_files:
+if (
+    config
+    and hasattr(config, "evaluation")
+    and config.evaluation.enabled
+    and session._modified_files
+):
     session.emit("eval_started", stages=config.evaluation.stages)
     max_retries = config.evaluation.max_retries
     retry = 0
@@ -1383,8 +1553,9 @@ if config and hasattr(config, 'evaluation') and config.evaluation.enabled and se
         retry += 1
         if retry > max_retries:
             break
-        session.emit("eval_retry", round=retry,
-                    reason=f"{eval_result.failed_stage} 失败，正在自动修复...")
+        session.emit(
+            "eval_retry", round=retry, reason=f"{eval_result.failed_stage} 失败，正在自动修复..."
+        )
         fix_prompt = (
             f"评估阶段「{eval_result.failed_stage}」发现以下问题，请修复：\n\n"
             f"```\n{eval_result.failed_output[:1500]}\n```\n\n"
@@ -1393,21 +1564,28 @@ if config and hasattr(config, 'evaluation') and config.evaluation.enabled and se
         session.messages.append({"role": "user", "content": fix_prompt})
         # Re-enter agent loop for fix (shorter max rounds)
         await _run_agent_loop_fix(
-            session=session, provider=provider, config=config,
-            tool_registry=tool_registry, max_rounds=5,
+            session=session,
+            provider=provider,
+            config=config,
+            tool_registry=tool_registry,
+            max_rounds=5,
         )
         # Refresh diff for next evaluation round
-        _sp.run(["git", "-C", _root, "add", "-A"],
-                capture_output=True, text=True, timeout=10)
+        _sp.run(["git", "-C", _root, "add", "-A"], capture_output=True, text=True, timeout=10)
         diff_result = _sp.run(
             ["git", "-C", _root, "diff", "--cached"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         session._cached_diff = diff_result.stdout.strip()
 
     if retry > max_retries and not eval_result.passed:
-        session.emit("eval_complete", passed=False,
-                    report=f"评估未完全通过（已达最大重试次数 {max_retries}）")
+        session.emit(
+            "eval_complete",
+            passed=False,
+            report=f"评估未完全通过（已达最大重试次数 {max_retries}）",
+        )
 ```
 
 Update the eval import at top of file:
@@ -1421,7 +1599,11 @@ Add a simplified agent loop used during evaluation fix rounds:
 
 ```python
 async def _run_agent_loop_fix(
-    session, provider, config, tool_registry, max_rounds: int = 5,
+    session,
+    provider,
+    config,
+    tool_registry,
+    max_rounds: int = 5,
 ):
     """Simplified agent loop for evaluation fix rounds. Fewer rounds, no nudging."""
     if not tool_registry:
@@ -1452,13 +1634,19 @@ async def _run_agent_loop_fix(
             if block.get("type") == "text":
                 assistant_content.append({"type": "text", "text": block.get("text", "")})
             elif block.get("type") == "thinking":
-                assistant_content.append({"type": "thinking", "thinking": block.get("thinking", "")})
+                assistant_content.append(
+                    {"type": "thinking", "thinking": block.get("thinking", "")}
+                )
             elif block.get("type") == "tool_use":
                 tool_uses.append(block)
-                assistant_content.append({
-                    "type": "tool_use", "id": block["id"],
-                    "name": block["name"], "input": block.get("input", {}),
-                })
+                assistant_content.append(
+                    {
+                        "type": "tool_use",
+                        "id": block["id"],
+                        "name": block["name"],
+                        "input": block.get("input", {}),
+                    }
+                )
 
         if not tool_uses:
             session.messages.append({"role": "assistant", "content": assistant_content})
@@ -1467,12 +1655,17 @@ async def _run_agent_loop_fix(
         tool_results = []
         for tool in tool_uses:
             exec_result = await tool_registry.execute(
-                tool["name"], tool.get("input", {}), _root, config)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool["id"],
-                "content": [{"type": "text", "text": json.dumps(exec_result, ensure_ascii=False)}],
-            })
+                tool["name"], tool.get("input", {}), _root, config
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool["id"],
+                    "content": [
+                        {"type": "text", "text": json.dumps(exec_result, ensure_ascii=False)}
+                    ],
+                }
+            )
             session.emit("tool_result", id=tool["id"], **exec_result)
             if tool["name"] in ("edit_file", "write_file") and exec_result.get("ok"):
                 if tool.get("input", {}).get("path") not in session._modified_files:
@@ -1528,6 +1721,7 @@ After creating `session_store`, add:
 ```python
 if tool_registry is None:
     from .tool_registry import DefaultToolRegistry, set_global_registry
+
     tool_registry = DefaultToolRegistry()
     tool_registry.load_builtin_tools()
     tool_registry.load_toml_tools(config)
@@ -1538,6 +1732,7 @@ if tool_registry is None:
 
 # Initialize backward-compat tools.py globals
 from .tools import _set_registry
+
 _set_registry(tool_registry)
 ```
 
@@ -1721,9 +1916,12 @@ async def _echo(args, project_root, config=None):
 
 def test_register_and_get_tool():
     registry = DefaultToolRegistry()
-    td = ToolDef(name="test", description="A test tool",
-                 input_schema={"type": "object", "properties": {}},
-                 execute=_echo)
+    td = ToolDef(
+        name="test",
+        description="A test tool",
+        input_schema={"type": "object", "properties": {}},
+        execute=_echo,
+    )
     registry.register(td)
     assert registry.get_tool("test") is td
     assert registry.get_tool("nonexistent") is None
@@ -1731,9 +1929,12 @@ def test_register_and_get_tool():
 
 def test_get_tools_returns_anthropic_schemas():
     registry = DefaultToolRegistry()
-    td = ToolDef(name="test", description="Desc",
-                 input_schema={"type": "object", "properties": {}},
-                 execute=_echo)
+    td = ToolDef(
+        name="test",
+        description="Desc",
+        input_schema={"type": "object", "properties": {}},
+        execute=_echo,
+    )
     registry.register(td)
     schemas = registry.get_tools("quick")
     assert len(schemas) == 1
@@ -1743,10 +1944,10 @@ def test_get_tools_returns_anthropic_schemas():
 
 def test_mode_filtering():
     registry = DefaultToolRegistry()
-    deep_only = ToolDef(name="deep_tool", description="",
-                        input_schema={}, execute=_echo, modes=["deep"])
-    all_modes = ToolDef(name="any_tool", description="",
-                        input_schema={}, execute=_echo, modes=None)
+    deep_only = ToolDef(
+        name="deep_tool", description="", input_schema={}, execute=_echo, modes=["deep"]
+    )
+    all_modes = ToolDef(name="any_tool", description="", input_schema={}, execute=_echo, modes=None)
     registry.register(deep_only)
     registry.register(all_modes)
 
@@ -1761,10 +1962,8 @@ def test_mode_filtering():
 
 def test_priority_override():
     registry = DefaultToolRegistry()
-    low = ToolDef(name="same", description="low", input_schema={},
-                  execute=_echo, priority=10)
-    high = ToolDef(name="same", description="high", input_schema={},
-                   execute=_echo, priority=20)
+    low = ToolDef(name="same", description="low", input_schema={}, execute=_echo, priority=10)
+    high = ToolDef(name="same", description="high", input_schema={}, execute=_echo, priority=20)
     registry.register(low)
     registry.register(high)
     assert registry.get_tool("same").description == "high"
@@ -1772,12 +1971,17 @@ def test_priority_override():
 
 def test_get_write_tool_names():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="read", description="", input_schema={},
-                               execute=_echo, is_write=False))
-    registry.register(ToolDef(name="write", description="", input_schema={},
-                               execute=_echo, is_write=True))
-    registry.register(ToolDef(name="approve", description="", input_schema={},
-                               execute=_echo, require_approval=True))
+    registry.register(
+        ToolDef(name="read", description="", input_schema={}, execute=_echo, is_write=False)
+    )
+    registry.register(
+        ToolDef(name="write", description="", input_schema={}, execute=_echo, is_write=True)
+    )
+    registry.register(
+        ToolDef(
+            name="approve", description="", input_schema={}, execute=_echo, require_approval=True
+        )
+    )
     names = registry.get_write_tool_names("quick")
     assert "write" in names
     assert "approve" in names
@@ -1787,8 +1991,7 @@ def test_get_write_tool_names():
 @pytest.mark.asyncio
 async def test_execute_tool():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="echo", description="", input_schema={},
-                               execute=_echo))
+    registry.register(ToolDef(name="echo", description="", input_schema={}, execute=_echo))
     result = await registry.execute("echo", {"msg": "hello"}, "/tmp", None)
     assert result["ok"] is True
     assert result["echo"] == "hello"
@@ -1803,10 +2006,10 @@ async def test_execute_unknown_tool():
 
 def test_list_tools():
     registry = DefaultToolRegistry()
-    registry.register(ToolDef(name="a", description="", input_schema={},
-                               execute=_echo, modes=None))
-    registry.register(ToolDef(name="b", description="", input_schema={},
-                               execute=_echo, modes=["deep"]))
+    registry.register(ToolDef(name="a", description="", input_schema={}, execute=_echo, modes=None))
+    registry.register(
+        ToolDef(name="b", description="", input_schema={}, execute=_echo, modes=["deep"])
+    )
     assert registry.list_tools() == ["a", "b"]
     assert registry.list_tools("quick") == ["a"]
 ```
@@ -1818,7 +2021,10 @@ def test_list_tools():
 
 import pytest
 from live_edit.evaluation import (
-    _detect_lint_cmd, _detect_test_cmd, EvalStage, EvalResult,
+    _detect_lint_cmd,
+    _detect_test_cmd,
+    EvalStage,
+    EvalResult,
 )
 
 
@@ -1844,8 +2050,7 @@ class TestEvalResult:
         assert r.passed
 
     def test_failed(self):
-        r = EvalResult(passed=False, stages_failed=["test"],
-                       report="test failed")
+        r = EvalResult(passed=False, stages_failed=["test"], report="test failed")
         assert not r.passed
         assert "test" in r.stages_failed
 ```

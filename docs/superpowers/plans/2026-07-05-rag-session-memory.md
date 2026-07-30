@@ -74,7 +74,7 @@ Add before `toml_tools = raw.get("tools", [])` (before line 241):
 In the `return Config(...)` call at the end of `parse_config()`, add after `evaluation=evaluation,`:
 
 ```python
-        session_memory=session_memory,
+session_memory = (session_memory,)
 ```
 
 - [ ] **Step 5: Test — verify Config parsing**
@@ -129,6 +129,7 @@ class TestEmbedderABC:
     def test_concrete_subclass_must_implement_embed_and_dimension(self):
         class Incomplete(Embedder):
             pass
+
         with pytest.raises(TypeError):
             Incomplete()
 
@@ -290,10 +291,10 @@ class LocalEmbedder(Embedder):
             if self._model is not None:
                 return
             from sentence_transformers import SentenceTransformer
+
             self._model = SentenceTransformer(self._model_name)
             self._dimension = self._model.get_sentence_embedding_dimension()
-            logger.info("LocalEmbedder loaded model=%s dim=%d",
-                        self._model_name, self._dimension)
+            logger.info("LocalEmbedder loaded model=%s dim=%d", self._model_name, self._dimension)
 
     def embed(self, text: str) -> list[float]:
         self._ensure_loaded()
@@ -336,18 +337,19 @@ git commit -m "feat: add Embedder ABC and LocalEmbedder with lazy loading"
 Add three new abstract methods to the `Storage` class, after `get_session_detail`:
 
 ```python
-    @abstractmethod
-    def store_embedding(self, session_id: str, request: str,
-                        files_json: str, embedding: bytes) -> None:
-        """Store a session embedding for later retrieval."""
+@abstractmethod
+def store_embedding(self, session_id: str, request: str, files_json: str, embedding: bytes) -> None:
+    """Store a session embedding for later retrieval."""
 
-    @abstractmethod
-    def query_embeddings(self) -> list[tuple[str, str, str, bytes]]:
-        """Return all stored embeddings as (session_id, request, files_json, embedding_blob)."""
 
-    @abstractmethod
-    def delete_old_embeddings(self, keep_count: int) -> None:
-        """Delete oldest embeddings, keeping at most `keep_count` most recent rows."""
+@abstractmethod
+def query_embeddings(self) -> list[tuple[str, str, str, bytes]]:
+    """Return all stored embeddings as (session_id, request, files_json, embedding_blob)."""
+
+
+@abstractmethod
+def delete_old_embeddings(self, keep_count: int) -> None:
+    """Delete oldest embeddings, keeping at most `keep_count` most recent rows."""
 ```
 
 - [ ] **Step 2: Add `session_embeddings` table to `_init_db()`**
@@ -372,16 +374,15 @@ In `SQLiteStorage._init_db()`, add after the `live_edit_sessions` table creation
 Add to `SQLiteStorage`:
 
 ```python
-    def store_embedding(self, session_id: str, request: str,
-                        files_json: str, embedding: bytes) -> None:
-        conn = self._get_conn()
-        conn.execute(
-            """INSERT OR REPLACE INTO session_embeddings
-               (session_id, request, files_json, embedding, created_at)
-               VALUES (?, ?, ?, ?, datetime('now'))""",
-            (session_id, request, files_json, embedding),
-        )
-        conn.commit()
+def store_embedding(self, session_id: str, request: str, files_json: str, embedding: bytes) -> None:
+    conn = self._get_conn()
+    conn.execute(
+        """INSERT OR REPLACE INTO session_embeddings
+           (session_id, request, files_json, embedding, created_at)
+           VALUES (?, ?, ?, ?, datetime('now'))""",
+        (session_id, request, files_json, embedding),
+    )
+    conn.commit()
 ```
 
 - [ ] **Step 4: Implement `query_embeddings()`**
@@ -430,9 +431,7 @@ class TestSessionEmbeddings:
 
     def test_init_creates_embeddings_table(self, storage):
         conn = storage._get_conn()
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "session_embeddings" in table_names
 
@@ -519,6 +518,7 @@ from live_edit.config import SessionMemoryConfig, EmbedderConfig
 
 class FakeEmbedder:
     """Returns fixed vectors for deterministic tests."""
+
     def __init__(self, dim=4, vectors=None):
         self._dim = dim
         self._vectors = vectors or {}
@@ -538,6 +538,7 @@ class FakeEmbedder:
 
 class FakeStorage:
     """In-memory storage for embedding tests."""
+
     def __init__(self, rows=None):
         self._rows = rows or []
 
@@ -568,12 +569,15 @@ class TestMemoryEntry:
 class TestSessionMemory:
     @pytest.fixture
     def embedder(self):
-        return FakeEmbedder(dim=4, vectors={
-            "add login": [1.0, 0.0, 0.0, 0.0],
-            "fix button": [0.0, 1.0, 0.0, 0.0],
-            "add auth": [0.8, 0.0, 0.0, 0.0],
-            "unrelated": [0.0, 0.0, 0.0, 1.0],
-        })
+        return FakeEmbedder(
+            dim=4,
+            vectors={
+                "add login": [1.0, 0.0, 0.0, 0.0],
+                "fix button": [0.0, 1.0, 0.0, 0.0],
+                "add auth": [0.8, 0.0, 0.0, 0.0],
+                "unrelated": [0.0, 0.0, 0.0, 1.0],
+            },
+        )
 
     @pytest.fixture
     def storage(self):
@@ -731,14 +735,11 @@ class SessionMemory:
             files_json = json.dumps(files or [], ensure_ascii=False)
             await loop.run_in_executor(
                 None,
-                lambda: self._storage.store_embedding(
-                    session_id, request, files_json, emb_bytes
-                ),
+                lambda: self._storage.store_embedding(session_id, request, files_json, emb_bytes),
             )
             await self._evict_if_needed()
         except Exception:
-            logger.warning("Failed to store embedding for session %s", session_id,
-                           exc_info=True)
+            logger.warning("Failed to store embedding for session %s", session_id, exc_info=True)
 
     async def retrieve(self, request: str) -> list[MemoryEntry]:
         """Find similar past sessions for a new request."""
@@ -746,19 +747,14 @@ class SessionMemory:
             return []
         try:
             loop = asyncio.get_running_loop()
-            query_vec = await loop.run_in_executor(
-                None, self._embedder.embed, request
-            )
-            rows = await loop.run_in_executor(
-                None, self._storage.query_embeddings
-            )
+            query_vec = await loop.run_in_executor(None, self._embedder.embed, request)
+            rows = await loop.run_in_executor(None, self._storage.query_embeddings)
             return self._score_and_rank(query_vec, rows)
         except Exception:
             logger.warning("Failed to retrieve session memories", exc_info=True)
             return []
 
-    def _score_and_rank(self, query_vec: list[float],
-                        rows: list[tuple]) -> list[MemoryEntry]:
+    def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[MemoryEntry]:
         entries = []
         dim = len(query_vec)
         for session_id, req, files_json, emb_bytes in rows:
@@ -770,15 +766,17 @@ class SessionMemory:
                 files = set(json.loads(files_json))
             except (json.JSONDecodeError, TypeError):
                 files = set()
-            entries.append(MemoryEntry(
-                session_id=session_id,
-                request=req,
-                files=files,
-                score=score,
-            ))
+            entries.append(
+                MemoryEntry(
+                    session_id=session_id,
+                    request=req,
+                    files=files,
+                    score=score,
+                )
+            )
 
         entries.sort(key=lambda e: e.score, reverse=True)
-        return entries[:self.config.max_entries]
+        return entries[: self.config.max_entries]
 
     @staticmethod
     def _cosine_similarity(a, b) -> float:
@@ -793,9 +791,7 @@ class SessionMemory:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
-            lambda: self._storage.delete_old_embeddings(
-                self.config.max_stored_entries
-            ),
+            lambda: self._storage.delete_old_embeddings(self.config.max_stored_entries),
         )
 ```
 
@@ -826,26 +822,23 @@ In `run_edit_session()`, after the system prompt is built and the worktree is cr
 Insert after the preview startup block (after line 459):
 
 ```python
-    # ── Retrieve session memory for context ──
-    if (hasattr(config, 'session_memory') and config.session_memory.enabled
-            and not continue_msg):
-        from .session_memory import SessionMemory
-        from .embedder import LocalEmbedder
+# ── Retrieve session memory for context ──
+if hasattr(config, "session_memory") and config.session_memory.enabled and not continue_msg:
+    from .session_memory import SessionMemory
+    from .embedder import LocalEmbedder
 
-        sm_embedder = LocalEmbedder(
-            model_name=config.session_memory.embedder.model
+    sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
+    session_memory = SessionMemory(
+        storage=storage,
+        embedder=sm_embedder,
+        config=config.session_memory,
+    )
+    memories = await session_memory.retrieve(session.request)
+    if memories:
+        memory_context = _format_memory_context(
+            memories, config.session_memory.memory_prompt_template
         )
-        session_memory = SessionMemory(
-            storage=storage,
-            embedder=sm_embedder,
-            config=config.session_memory,
-        )
-        memories = await session_memory.retrieve(session.request)
-        if memories:
-            memory_context = _format_memory_context(
-                memories, config.session_memory.memory_prompt_template
-            )
-            system_prompt += "\n\n" + memory_context
+        system_prompt += "\n\n" + memory_context
 ```
 
 - [ ] **Step 2: Add memory injection to continuation path**
@@ -853,25 +846,23 @@ Insert after the preview startup block (after line 459):
 In the `continue_msg and session.messages` branch (around line 461), after repairing and appending the continue message, add:
 
 ```python
-        # ── Retrieve session memory for continuation ──
-        if (hasattr(config, 'session_memory') and config.session_memory.enabled):
-            from .session_memory import SessionMemory
-            from .embedder import LocalEmbedder
+# ── Retrieve session memory for continuation ──
+if hasattr(config, "session_memory") and config.session_memory.enabled:
+    from .session_memory import SessionMemory
+    from .embedder import LocalEmbedder
 
-            sm_embedder = LocalEmbedder(
-                model_name=config.session_memory.embedder.model
-            )
-            session_memory = SessionMemory(
-                storage=storage,
-                embedder=sm_embedder,
-                config=config.session_memory,
-            )
-            memories = await session_memory.retrieve(continue_msg)
-            if memories:
-                memory_context = _format_memory_context(
-                    memories, config.session_memory.memory_prompt_template
-                )
-                messages.append({"role": "user", "content": memory_context})
+    sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
+    session_memory = SessionMemory(
+        storage=storage,
+        embedder=sm_embedder,
+        config=config.session_memory,
+    )
+    memories = await session_memory.retrieve(continue_msg)
+    if memories:
+        memory_context = _format_memory_context(
+            memories, config.session_memory.memory_prompt_template
+        )
+        messages.append({"role": "user", "content": memory_context})
 ```
 
 - [ ] **Step 3: Write `_format_memory_context()` helper**
@@ -887,8 +878,7 @@ def _format_memory_context(memories: list, template: str = "") -> str:
             for i, m in enumerate(memories, 1):
                 files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
                 items.append(
-                    template
-                    .replace("{index}", str(i))
+                    template.replace("{index}", str(i))
                     .replace("{request}", m.request)
                     .replace("{files}", files_str)
                     .replace("{commit_hash}", m.commit_hash)
@@ -907,7 +897,7 @@ def _format_memory_context(memories: list, template: str = "") -> str:
     ]
     for i, m in enumerate(memories, 1):
         files_str = ", ".join(sorted(m.files)) if m.files else "(none)"
-        lines.append(f"{i}. Request: \"{m.request}\"")
+        lines.append(f'{i}. Request: "{m.request}"')
         lines.append(f"   Files modified: {files_str}")
         if m.commit_hash:
             lines.append(f"   Commit: {m.commit_hash}")
@@ -923,26 +913,25 @@ def _format_memory_context(memories: list, template: str = "") -> str:
 In `_do_commit()`, after `session._commit_hash = wt_hash` (line 413) and before `session._committed = True` (line 414), add:
 
 ```python
-        # ── Store session embedding for future retrieval ──
-        if config and hasattr(config, 'session_memory') and config.session_memory.enabled:
-            try:
-                from .session_memory import SessionMemory
-                from .embedder import LocalEmbedder
-                sm_embedder = LocalEmbedder(
-                    model_name=config.session_memory.embedder.model
-                )
-                session_memory = SessionMemory(
-                    storage=storage,
-                    embedder=sm_embedder,
-                    config=config.session_memory,
-                )
-                await session_memory.store(
-                    session_id=session.id,
-                    request=session.request,
-                    files=session._modified_files,
-                )
-            except Exception as e:
-                logger.warning("Failed to store session memory: %s", e)
+# ── Store session embedding for future retrieval ──
+if config and hasattr(config, "session_memory") and config.session_memory.enabled:
+    try:
+        from .session_memory import SessionMemory
+        from .embedder import LocalEmbedder
+
+        sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
+        session_memory = SessionMemory(
+            storage=storage,
+            embedder=sm_embedder,
+            config=config.session_memory,
+        )
+        await session_memory.store(
+            session_id=session.id,
+            request=session.request,
+            files=session._modified_files,
+        )
+    except Exception as e:
+        logger.warning("Failed to store session memory: %s", e)
 ```
 
 - [ ] **Step 5: Write engine integration tests — add to `tests/test_engine.py`**
@@ -956,8 +945,13 @@ class TestFormatMemoryContext:
         from live_edit.engine import _format_memory_context
 
         memories = [
-            MemoryEntry(session_id="s1", request="Fix auth",
-                        files={"auth.py"}, commit_hash="abc", score=0.95),
+            MemoryEntry(
+                session_id="s1",
+                request="Fix auth",
+                files={"auth.py"},
+                commit_hash="abc",
+                score=0.95,
+            ),
         ]
         result = _format_memory_context(memories)
         assert "Historical Similar Edit Records" in result
@@ -970,8 +964,13 @@ class TestFormatMemoryContext:
         from live_edit.engine import _format_memory_context
 
         memories = [
-            MemoryEntry(session_id="s1", request="Fix auth",
-                        files={"auth.py"}, commit_hash="abc", score=0.95),
+            MemoryEntry(
+                session_id="s1",
+                request="Fix auth",
+                files={"auth.py"},
+                commit_hash="abc",
+                score=0.95,
+            ),
         ]
         template = "[{index}] {request} ({files}) score={score}"
         result = _format_memory_context(memories, template)
@@ -979,6 +978,7 @@ class TestFormatMemoryContext:
 
     def test_empty_memories(self):
         from live_edit.engine import _format_memory_context
+
         result = _format_memory_context([])
         assert "Historical" in result
 
@@ -1006,8 +1006,12 @@ class TestSessionMemoryEngineIntegration:
         ]
 
         await run_edit_session(
-            session=session, provider=mock_provider, vcs=mock_vcs,
-            storage=mock_storage, config=config, mode="deep",
+            session=session,
+            provider=mock_provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
             tool_registry=mock_registry,
         )
         # Should complete without errors
@@ -1087,33 +1091,29 @@ In `run_edit_session()`, replace the inline `LocalEmbedder` + `SessionMemory` in
 Replace both inline blocks with this pattern (put once before the memory retrieval check):
 
 ```python
-    # ── Session memory setup (validated once at startup) ──
-    from .session_memory import SessionMemory
-    from .embedder import LocalEmbedder
+# ── Session memory setup (validated once at startup) ──
+from .session_memory import SessionMemory
+from .embedder import LocalEmbedder
 
-    session_memory = None
-    if hasattr(config, 'session_memory') and config.session_memory.enabled:
-        try:
-            sm_embedder = LocalEmbedder(
-                model_name=config.session_memory.embedder.model
-            )
-            # Validate embedding works before using in session
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, sm_embedder.embed, "test")
-            session_memory = SessionMemory(
-                storage=storage,
-                embedder=sm_embedder,
-                config=config.session_memory,
-            )
-        except ImportError:
-            logger.warning(
-                "session_memory.enabled=true but sentence-transformers is not "
-                "installed. Install with: pip install live-edit[rag]"
-            )
-        except Exception as e:
-            logger.warning(
-                "Session memory disabled: embedding model failed to load: %s", e
-            )
+session_memory = None
+if hasattr(config, "session_memory") and config.session_memory.enabled:
+    try:
+        sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
+        # Validate embedding works before using in session
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, sm_embedder.embed, "test")
+        session_memory = SessionMemory(
+            storage=storage,
+            embedder=sm_embedder,
+            config=config.session_memory,
+        )
+    except ImportError:
+        logger.warning(
+            "session_memory.enabled=true but sentence-transformers is not "
+            "installed. Install with: pip install live-edit[rag]"
+        )
+    except Exception as e:
+        logger.warning("Session memory disabled: embedding model failed to load: %s", e)
 ```
 
 Then in the new-session path:
@@ -1141,16 +1141,16 @@ In `run_edit_session()`, after creating `session_memory`:
 
 In `_do_commit()`, replace the inline embedder instantiation:
 ```python
-        sm = getattr(session, '_session_memory', None)
-        if sm is not None:
-            try:
-                await sm.store(
-                    session_id=session.id,
-                    request=session.request,
-                    files=session._modified_files,
-                )
-            except Exception as e:
-                logger.warning("Failed to store session memory: %s", e)
+sm = getattr(session, "_session_memory", None)
+if sm is not None:
+    try:
+        await sm.store(
+            session_id=session.id,
+            request=session.request,
+            files=session._modified_files,
+        )
+    except Exception as e:
+        logger.warning("Failed to store session memory: %s", e)
 ```
 
 - [ ] **Step 2: Write test for the ImportError case**
@@ -1158,34 +1158,38 @@ In `_do_commit()`, replace the inline embedder instantiation:
 Add to `tests/test_engine.py`:
 
 ```python
-    @pytest.mark.asyncio
-    async def test_missing_rag_dependency_logs_warning(self):
-        """When rag dep is missing, engine should warn but not crash."""
-        from live_edit.engine import run_edit_session, EditSession
+@pytest.mark.asyncio
+async def test_missing_rag_dependency_logs_warning(self):
+    """When rag dep is missing, engine should warn but not crash."""
+    from live_edit.engine import run_edit_session, EditSession
 
-        config = Config()
-        config.session_memory.enabled = True
+    config = Config()
+    config.session_memory.enabled = True
 
-        session = EditSession("test-s2", "Make it red")
-        mock_provider = AsyncMock()
-        mock_vcs = MagicMock()
-        mock_vcs.create_worktree.return_value = "/tmp/test-s2"
-        mock_vcs.commit_in_worktree.return_value = "fakehash"
-        mock_storage = MagicMock()
-        mock_registry = MagicMock()
-        mock_registry.get_tools.return_value = []
+    session = EditSession("test-s2", "Make it red")
+    mock_provider = AsyncMock()
+    mock_vcs = MagicMock()
+    mock_vcs.create_worktree.return_value = "/tmp/test-s2"
+    mock_vcs.commit_in_worktree.return_value = "fakehash"
+    mock_storage = MagicMock()
+    mock_registry = MagicMock()
+    mock_registry.get_tools.return_value = []
 
-        mock_provider.call_with_tools.return_value = [
-            {"type": "text", "text": "Done."},
-        ]
+    mock_provider.call_with_tools.return_value = [
+        {"type": "text", "text": "Done."},
+    ]
 
-        with patch("live_edit.engine.LocalEmbedder", side_effect=ImportError("No module")):
-            await run_edit_session(
-                session=session, provider=mock_provider, vcs=mock_vcs,
-                storage=mock_storage, config=config, mode="deep",
-                tool_registry=mock_registry,
-            )
-        # Should complete without raising
+    with patch("live_edit.engine.LocalEmbedder", side_effect=ImportError("No module")):
+        await run_edit_session(
+            session=session,
+            provider=mock_provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            tool_registry=mock_registry,
+        )
+    # Should complete without raising
 ```
 
 Add `from unittest.mock import patch` import check near the top of the test file.

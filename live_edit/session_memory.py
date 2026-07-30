@@ -53,8 +53,7 @@ class SessionMemory:
 
         # Check old table exists
         exists = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='session_embeddings'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='session_embeddings'"
         ).fetchone()
         if not exists:
             conn.execute("PRAGMA user_version = 1")
@@ -87,12 +86,8 @@ class SessionMemory:
             conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
             conn.execute("PRAGMA user_version = 1")
             conn.commit()
-            count = conn.execute(
-                "SELECT COUNT(*) FROM session_chunks"
-            ).fetchone()[0]
-            logger.info(
-                "Migration complete: %d chunks in session_chunks", count
-            )
+            count = conn.execute("SELECT COUNT(*) FROM session_chunks").fetchone()[0]
+            logger.info("Migration complete: %d chunks in session_chunks", count)
         except Exception:
             conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
             conn.rollback()
@@ -107,8 +102,9 @@ class SessionMemory:
 
     # --- Public API ---
 
-    async def store(self, session_id: str, request: str, files: list[str],
-                    diff: str, commit_hash: str) -> None:
+    async def store(
+        self, session_id: str, request: str, files: list[str], diff: str, commit_hash: str
+    ) -> None:
         """Chunk session by file and store embeddings transactionally.
 
         Produces 1 request chunk + 1 file_diff chunk per modified file.
@@ -120,38 +116,37 @@ class SessionMemory:
             loop = asyncio.get_running_loop()
 
             # Parse diff into per-file chunks
-            file_chunks = await loop.run_in_executor(
-                None, self._split_diff_by_file, diff
-            )
+            file_chunks = await loop.run_in_executor(None, self._split_diff_by_file, diff)
 
             # Build all chunk_texts for batch embedding
             chunk_texts = [request]  # request chunk
             for fc in file_chunks:
-                chunk_texts.append(
-                    f"{request}\nFile: {fc['file_path']}\nChanges: {fc['stat']}"
-                )
+                chunk_texts.append(f"{request}\nFile: {fc['file_path']}\nChanges: {fc['stat']}")
 
             # Batch embed (CPU-bound)
-            embeddings = await loop.run_in_executor(
-                None, self._embedder.embed_batch, chunk_texts
-            )
+            embeddings = await loop.run_in_executor(None, self._embedder.embed_batch, chunk_texts)
 
             # Construct chunk dicts with embeddings
             dim = len(embeddings[0])
             chunks = []
 
             # Request chunk
-            chunks.append({
-                "chunk_type": "request",
-                "chunk_text": chunk_texts[0],
-                "payload_json": json.dumps({
-                    "request": request,
-                    "files": files or [],
-                    "commit_hash": commit_hash,
-                }, ensure_ascii=False),
-                "file_path": "",
-                "embedding_bytes": struct.pack(f"{dim}f", *embeddings[0]),
-            })
+            chunks.append(
+                {
+                    "chunk_type": "request",
+                    "chunk_text": chunk_texts[0],
+                    "payload_json": json.dumps(
+                        {
+                            "request": request,
+                            "files": files or [],
+                            "commit_hash": commit_hash,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "file_path": "",
+                    "embedding_bytes": struct.pack(f"{dim}f", *embeddings[0]),
+                }
+            )
 
             # File-diff chunks
             for i, fc in enumerate(file_chunks):
@@ -162,23 +157,21 @@ class SessionMemory:
                     "request": request,
                     "commit_hash": commit_hash,
                 }
-                chunks.append({
-                    "chunk_type": "file_diff",
-                    "chunk_text": chunk_texts[i + 1],
-                    "payload_json": json.dumps(payload, ensure_ascii=False),
-                    "file_path": fc["file_path"],
-                    "embedding_bytes": struct.pack(
-                        f"{dim}f", *embeddings[i + 1]
-                    ),
-                })
+                chunks.append(
+                    {
+                        "chunk_type": "file_diff",
+                        "chunk_text": chunk_texts[i + 1],
+                        "payload_json": json.dumps(payload, ensure_ascii=False),
+                        "file_path": fc["file_path"],
+                        "embedding_bytes": struct.pack(f"{dim}f", *embeddings[i + 1]),
+                    }
+                )
 
             # Transactional write + eviction in one run_in_executor call
             max_sessions = self.config.max_stored_entries
             await loop.run_in_executor(
                 None,
-                lambda: self._storage.store_chunks(
-                    session_id, commit_hash, chunks
-                ),
+                lambda: self._storage.store_chunks(session_id, commit_hash, chunks),
             )
             # Evict old sessions (fire-and-forget; session-level)
             await loop.run_in_executor(
@@ -188,7 +181,8 @@ class SessionMemory:
 
         except Exception:
             logger.warning(
-                "Failed to store chunks for session %s", session_id,
+                "Failed to store chunks for session %s",
+                session_id,
                 exc_info=True,
             )
 
@@ -198,17 +192,11 @@ class SessionMemory:
             return []
         try:
             loop = asyncio.get_running_loop()
-            query_vec = await loop.run_in_executor(
-                None, self._embedder.embed, request
-            )
-            rows = await loop.run_in_executor(
-                None, self._storage.query_chunks
-            )
+            query_vec = await loop.run_in_executor(None, self._embedder.embed, request)
+            rows = await loop.run_in_executor(None, self._storage.query_chunks)
             return self._score_and_rank(query_vec, rows)
         except Exception:
-            logger.warning(
-                "Failed to retrieve session memories", exc_info=True
-            )
+            logger.warning("Failed to retrieve session memories", exc_info=True)
             return []
 
     # --- Diff parsing ---
@@ -224,7 +212,7 @@ class SessionMemory:
             return []
 
         # Split on 'diff --git ' boundaries
-        parts = re.split(r'^(?=diff --git )', diff, flags=re.MULTILINE)
+        parts = re.split(r"^(?=diff --git )", diff, flags=re.MULTILINE)
         results = []
 
         for part in parts:
@@ -233,18 +221,14 @@ class SessionMemory:
                 continue
 
             # Check for binary
-            if re.search(r'^Binary files ', part, re.MULTILINE):
+            if re.search(r"^Binary files ", part, re.MULTILINE):
                 continue
 
             # Extract file path from ---/+++ headers
-            file_match = re.search(
-                r'^\+\+\+ b/(.+)$', part, re.MULTILINE
-            )
+            file_match = re.search(r"^\+\+\+ b/(.+)$", part, re.MULTILINE)
             if not file_match:
                 # Try rename
-                rename_match = re.search(
-                    r'^rename (?:from|to) (.+)$', part, re.MULTILINE
-                )
+                rename_match = re.search(r"^rename (?:from|to) (.+)$", part, re.MULTILINE)
                 if rename_match:
                     file_path = rename_match.group(1)
                 else:
@@ -253,23 +237,23 @@ class SessionMemory:
                 file_path = file_match.group(1)
 
             # Count stat
-            lines_added = len(re.findall(r'^\+(?!\+\+)', part, re.MULTILINE))
-            lines_removed = len(re.findall(r'^-(?!--)', part, re.MULTILINE))
+            lines_added = len(re.findall(r"^\+(?!\+\+)", part, re.MULTILINE))
+            lines_removed = len(re.findall(r"^-(?!--)", part, re.MULTILINE))
             stat = f"+{lines_added}/-{lines_removed}"
 
-            results.append({
-                "file_path": file_path,
-                "stat": stat,
-                "diff_content": part,
-            })
+            results.append(
+                {
+                    "file_path": file_path,
+                    "stat": stat,
+                    "diff_content": part,
+                }
+            )
 
         return results
 
     # --- Scoring ---
 
-    def _score_and_rank(
-        self, query_vec: list[float], rows: list[tuple]
-    ) -> list[MemoryEntry]:
+    def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[MemoryEntry]:
         """Score chunks, group by session (top-2, prefer file_diff), rank."""
         dim = len(query_vec)
         scored = []  # (session_id, chunk_type, file_path, score, payload)
@@ -293,13 +277,18 @@ class SessionMemory:
             except (json.JSONDecodeError, TypeError):
                 payload = {}
 
-            scored.append((
-                session_id, chunk_type, file_path, score,
-                payload.get("request", ""),
-                payload.get("stat", ""),
-                commit_hash,
-                payload.get("diff", ""),
-            ))
+            scored.append(
+                (
+                    session_id,
+                    chunk_type,
+                    file_path,
+                    score,
+                    payload.get("request", ""),
+                    payload.get("stat", ""),
+                    commit_hash,
+                    payload.get("diff", ""),
+                )
+            )
 
         # Group by session_id
         by_session: dict[str, list] = {}
@@ -311,7 +300,7 @@ class SessionMemory:
 
         # Per session: pick top-2, prefer file_diff
         entries = []
-        for sid, items in by_session.items():
+        for _sid, items in by_session.items():
             # Sort: file_diff first (bonus), then by score desc
             def _sort_key(item):
                 chunk_type = item[1]
@@ -322,32 +311,32 @@ class SessionMemory:
             items.sort(key=_sort_key, reverse=True)
             picked = items[:2]
 
-            for (_sid, _ct, fpath, score, req, stat, chash, diff) in picked:
+            for _sid, _ct, fpath, score, req, stat, chash, diff in picked:
                 # diff_summary: first 4 non-empty lines of diff, ~120 chars
-                diff_lines = [
-                    l for l in (diff or "").split("\n") if l.strip()
-                ][:4]
+                diff_lines = [line for line in (diff or "").split("\n") if line.strip()][:4]
                 diff_summary = "\n".join(diff_lines)
 
-                entries.append(MemoryEntry(
-                    session_id=_sid,
-                    request=req,
-                    file_path=fpath,
-                    diff_summary=diff_summary,
-                    stat=stat,
-                    commit_hash=chash,
-                    score=score,
-                ))
+                entries.append(
+                    MemoryEntry(
+                        session_id=_sid,
+                        request=req,
+                        file_path=fpath,
+                        diff_summary=diff_summary,
+                        stat=stat,
+                        commit_hash=chash,
+                        score=score,
+                    )
+                )
 
         # Sort across sessions by best chunk score, take top max_entries
         entries.sort(key=lambda e: e.score, reverse=True)
-        return entries[:self.config.max_entries]
+        return entries[: self.config.max_entries]
 
     @staticmethod
     def _cosine_similarity(a, b) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(y * y for y in b))
         if norm_a == 0 or norm_b == 0:
             return 0.0
-        return dot / (norm_a * norm_b)
+        return dot / (norm_a * norm_b)  # type: ignore[no-any-return]

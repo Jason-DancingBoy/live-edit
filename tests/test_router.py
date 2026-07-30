@@ -1,11 +1,8 @@
 """Tests for live_edit.router — FastAPI endpoints."""
 
-import json
-import os
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -94,17 +91,26 @@ communication_rules = "Use technical terms."
         {"commit_hash": "abc123", "message": "live-edit: fix", "date": "2026-01-01"},
     ]
     mock_vcs.revert_preview.return_value = MagicMock(
-        ok=True, can_revert=True, files=["file.py"],
-        diff_summary="1 file changed", conflicts=[],
+        ok=True,
+        can_revert=True,
+        files=["file.py"],
+        diff_summary="1 file changed",
+        conflicts=[],
     )
     mock_vcs.revert_execute.return_value = MagicMock(
-        ok=True, new_commit_hash="def456", message="回滚成功",
+        ok=True,
+        new_commit_hash="def456",
+        message="回滚成功",
     )
     mock_storage = MagicMock()
     mock_storage.get_sessions.return_value = []
     mock_storage.get_session_detail.return_value = {
-        "session_id": "s1", "request": "Test", "committed": 1,
-        "commit_hash": "abc", "files": '["a.py"]', "mode": "quick",
+        "session_id": "s1",
+        "request": "Test",
+        "committed": 1,
+        "commit_hash": "abc",
+        "files": '["a.py"]',
+        "mode": "quick",
         "messages": "[]",
     }
 
@@ -204,7 +210,8 @@ class TestStreamEndpoint:
     def test_stream_starts_session(self, client):
         """POST /live-edit/stream returns SSE events."""
         with client.stream(
-            "POST", "/live-edit/stream",
+            "POST",
+            "/live-edit/stream",
             json={"request": "Add a button", "mode": "quick"},
         ) as response:
             assert response.status_code == 200
@@ -238,6 +245,7 @@ class TestHealthCheck:
 def branch_app(tmp_path):
     """App fixture exposing vcs/storage mocks for branch endpoint tests."""
     from live_edit.router import setup_live_edit
+
     config_path = tmp_path / ".live-edit.toml"
     config_path.write_text("""
 [project]
@@ -284,6 +292,7 @@ communication_rules = "Use technical terms."
     # Back vcs.repo_path with a real git repo so the merge endpoint's
     # subprocess `git rev-parse` calls resolve live-edit/s1.
     import subprocess as _sp
+
     _sp.run(["git", "init", "-q"], cwd=str(tmp_path), capture_output=True)
     _sp.run(["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True)
     _sp.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
@@ -294,14 +303,22 @@ communication_rules = "Use technical terms."
     _sp.run(["git", "branch", "live-edit/s1"], cwd=str(tmp_path), capture_output=True)
     mock_vcs.repo_path = str(tmp_path)
     mock_vcs.list_unmerged_branches.return_value = [
-        {"session_id": "s1", "branch": "live-edit/s1",
-         "commit_hash": "abc1234", "commit_time": "2026-06-19 12:00:00 +0800",
-         "subject": "live-edit: fix button"},
+        {
+            "session_id": "s1",
+            "branch": "live-edit/s1",
+            "commit_hash": "abc1234",
+            "commit_time": "2026-06-19 12:00:00 +0800",
+            "subject": "live-edit: fix button",
+        },
     ]
     mock_storage = MagicMock()
     mock_storage.get_session_detail.return_value = {
-        "session_id": "s1", "request": "Fix the button color", "committed": 1,
-        "commit_hash": "abc1234", "files": '["a.py"]', "mode": "quick",
+        "session_id": "s1",
+        "request": "Fix the button color",
+        "committed": 1,
+        "commit_hash": "abc1234",
+        "files": '["a.py"]',
+        "mode": "quick",
         "messages": "[]",
     }
     router = setup_live_edit(
@@ -384,7 +401,6 @@ class TestAdminBranchDelete:
     def test_delete_success(self, branch_client, branch_app):
         vcs = branch_app.state.vcs
         vcs.discard_session_branch = MagicMock()
-        storage = branch_app.state.storage
 
         resp = branch_client.post(
             "/live-edit/admin/branches/s1/delete",

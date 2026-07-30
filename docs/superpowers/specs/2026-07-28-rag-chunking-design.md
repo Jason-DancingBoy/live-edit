@@ -77,13 +77,15 @@ chunk_text = request
 stat = f"+{lines_added}/-{lines_removed}"  # e.g. "+42/-8"
 chunk_text = f"{request}\nFile: {file_path}\nChanges: {stat}"
 
-payload_json = json.dumps({
-    "file": file_path,
-    "diff": diff_content[:3000],   # truncated to prevent DB bloat
-    "stat": stat,
-    "request": request,
-    "commit_hash": commit_hash,
-})
+payload_json = json.dumps(
+    {
+        "file": file_path,
+        "diff": diff_content[:3000],  # truncated to prevent DB bloat
+        "stat": stat,
+        "request": request,
+        "commit_hash": commit_hash,
+    }
+)
 ```
 
 **Rationale:** `"add JWT login\nFile: src/auth.py\nChanges: +42/-8"` is a semantic
@@ -177,6 +179,7 @@ def _format_memory_context(entries: list[MemoryEntry], template: str = "") -> st
         lines.append(f'{i}. "{entry.request}" ({entry.score:.0%})')
         lines.append(f"   → {entry.file_path}: {entry.diff_summary}")
     return "\n".join(lines)
+
 
 # diff_summary = first 4 lines of diff content (hunk header + context), ~60 chars
 ```
