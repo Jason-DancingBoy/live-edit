@@ -177,6 +177,21 @@ enabled = true
         assert config.memory.enabled is True
         assert config.memory.long_term.enabled is True
 
+    def test_memory_long_term_activates_memory_when_no_enabled(self, tmp_path):
+        """[memory.long_term] enabled=true alone must activate the memory master switch."""
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[memory.long_term]
+enabled = true
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        assert config.memory.enabled is True
+        assert config.memory.long_term.enabled is True
+
     def test_memory_long_term_takes_priority_over_session_memory(self, tmp_path):
         toml_path = tmp_path / ".live-edit.toml"
         toml_path.write_text(

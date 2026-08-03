@@ -431,7 +431,7 @@ def parse_config(path: str) -> Config:
     )
 
     memory = MemoryConfig(
-        enabled=mem_data.get("enabled", sm_data.get("enabled", False)),
+        enabled=mem_data.get("enabled", lt_data.get("enabled", sm_data.get("enabled", False))),
         short_term=short_term,
         long_term=long_term,
         knowledge=knowledge,

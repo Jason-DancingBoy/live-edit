@@ -879,18 +879,55 @@ class TestSessionMemoryEngineIntegration:
         # Should complete without raising
 
 
-def test_memory_manager_integration():
-    """Verify engine constructs MemoryManager correctly when config.memory.enabled is True."""
-    from live_edit.config import Config, MemoryConfig, LongTermConfig  # noqa: I001  (kept verbatim from brief)
-    from live_edit.memory import MemoryManager  # noqa: F401  (kept verbatim from brief)
+@pytest.mark.asyncio
+async def test_memory_manager_integration():
+    """Engine constructs MemoryManager when memory.enabled; leaves None when disabled."""
+    from live_edit.config import Config, LongTermConfig, MemoryConfig
+    from live_edit.engine import EditSession, run_edit_session
+    from live_edit.memory import MemoryManager
 
-    config = Config(
-        memory=MemoryConfig(
-            enabled=True,
-            long_term=LongTermConfig(enabled=True),
-        ),
-    )
-    assert config.memory.enabled is True
-    assert config.memory.long_term.enabled is True
-    # Backward compat
-    assert config.session_memory is config.memory.long_term
+    class FakeEmbedder:
+        def embed(self, text):
+            return [0.5] * 384
+
+        def embed_batch(self, texts):
+            return [[0.5] * 384 for _ in texts]
+
+        @property
+        def dimension(self):
+            return 384
+
+    async def run_session(memory_enabled):
+        config = Config(
+            memory=MemoryConfig(
+                enabled=memory_enabled,
+                long_term=LongTermConfig(enabled=False),
+            ),
+        )
+        session = EditSession(f"test-s3-{memory_enabled}", "Make it red")
+        mock_provider = AsyncMock()
+        mock_provider.call_with_tools.return_value = [{"type": "text", "text": "Done."}]
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = "/tmp/test-s3"
+        mock_vcs.commit_in_worktree.return_value = "fakehash"
+        mock_storage = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry.get_tools.return_value = []
+
+        with patch("live_edit.embedder.LocalEmbedder", return_value=FakeEmbedder()):
+            await run_edit_session(
+                session=session,
+                provider=mock_provider,
+                vcs=mock_vcs,
+                storage=mock_storage,
+                config=config,
+                mode="deep",
+                tool_registry=mock_registry,
+            )
+        return session
+
+    enabled_session = await run_session(True)
+    assert isinstance(enabled_session._session_memory, MemoryManager)
+
+    disabled_session = await run_session(False)
+    assert disabled_session._session_memory is None
