@@ -110,3 +110,32 @@ class TestKnowledgeBase:
         paths = {d["source_path"] for d in docs}
         assert "api:a" in paths
         assert "api:b" in paths
+
+    def test_split_text_no_duplicate_after_oversized_paragraph(self, kb):
+        para = "x" * 1200
+        text = "SHORT_PARA_AAA\n\n" + para + "\n\nSHORT_PARA_BBB"
+        chunks = kb._split_text(text, chunk_size=500, overlap=50)
+        assert len(chunks) > 1
+        joined = "\n".join(chunks)
+        assert joined.count("SHORT_PARA_AAA") == 1
+        assert joined.count("SHORT_PARA_BBB") == 1
+
+    def test_sync_files_skips_failed_file_and_continues(self, kb, tmp_path):
+        kb_dir = tmp_path / "knowledge"
+        kb_dir.mkdir(exist_ok=True)
+        (kb_dir / "a.md").write_text("content a")
+        (kb_dir / "b.md").write_text("content b")
+
+        orig = kb._index_document
+        calls = {"n": 0}
+
+        def flaky(src, content, stype, fhash):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return orig(src, content, stype, fhash)
+
+        kb._index_document = flaky
+
+        result = kb.sync_files(str(tmp_path))
+        assert result["added"] == 1  # only b.md indexed; a.md skipped, not aborted

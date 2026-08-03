@@ -551,12 +551,16 @@ class KnowledgeBase:
         # Find added/updated
         for fname, content in disk_files.items():
             file_hash = hashlib.sha256(content.encode()).hexdigest()
-            if fname not in existing_meta:
-                self._index_document(fname, content, "file", file_hash)
-                result["added"] += 1
-            elif existing_meta[fname].get("file_hash") != file_hash:
-                self._index_document(fname, content, "file", file_hash)
-                result["updated"] += 1
+            try:
+                if fname not in existing_meta:
+                    self._index_document(fname, content, "file", file_hash)
+                    result["added"] += 1
+                elif existing_meta[fname].get("file_hash") != file_hash:
+                    self._index_document(fname, content, "file", file_hash)
+                    result["updated"] += 1
+            except Exception as e:
+                logger.warning("Failed to index knowledge file %s: %s", fname, e)
+                continue
 
         # Find removed
         for fname in existing_meta:
@@ -606,6 +610,7 @@ class KnowledgeBase:
                 if len(para) > chunk_size:
                     for i in range(0, len(para), chunk_size - overlap):
                         chunks.append(para[i : i + chunk_size])
+                    current = ""  # reset so the stale buffer is not emitted again
                 else:
                     current = para
         if current:
