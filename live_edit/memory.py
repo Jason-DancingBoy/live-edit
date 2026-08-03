@@ -1,20 +1,16 @@
 """Three-tier memory system: ShortTermMemory, LongTermMemory, KnowledgeBase, MemoryManager."""
 
 import asyncio
-import hashlib  # noqa: F401  (used by later tiers in this file)
+import hashlib
 import json
 import logging
 import math
-import os  # noqa: F401  (used by later tiers in this file)
+import os
 import re
 import struct
 from dataclasses import dataclass
 
-from .config import (
-    KnowledgeConfig,  # noqa: F401  (used by later tiers in this file)
-    LongTermConfig,
-    ShortTermConfig,
-)
+from .config import KnowledgeConfig, LongTermConfig, ShortTermConfig
 
 logger = logging.getLogger("live-edit.memory")
 
@@ -501,3 +497,201 @@ class LongTermMemory:
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot / (norm_a * norm_b)  # type: ignore[no-any-return]
+
+
+@dataclass
+class KnowledgeEntry:
+    source_path: str
+    chunk_text: str
+    score: float
+
+
+class KnowledgeBase:
+    """L3: Project knowledge base — file sync + API upload, independent of sessions."""
+
+    def __init__(self, storage, embedder, config: KnowledgeConfig):
+        self._storage = storage
+        self._embedder = embedder
+        self.config = config
+        # Rebuild vec tables if the embedder dimension changed (Task 2 Step 7).
+        # hasattr guard keeps test doubles (FakeStorage) that lack the method safe.
+        if hasattr(self._storage, "_ensure_vec_dimension"):
+            try:
+                self._storage._ensure_vec_dimension(self._embedder.dimension)
+            except Exception:
+                logger.warning("vec dimension check failed; using brute-force fallback")
+
+    # --- File Sync ---
+
+    def sync_files(self, project_root: str) -> dict[str, int]:
+        """Scan knowledge_dir, diff against meta, sync chunks. Returns change counts."""
+        knowledge_dir = os.path.join(project_root, self.config.knowledge_dir)
+        result = {"added": 0, "updated": 0, "removed": 0}
+
+        # Collect files on disk
+        disk_files: dict[str, str] = {}
+        if os.path.isdir(knowledge_dir):
+            for fname in os.listdir(knowledge_dir):
+                if fname.endswith((".md", ".txt")):
+                    fpath = os.path.join(knowledge_dir, fname)
+                    try:
+                        with open(fpath, encoding="utf-8") as f:
+                            content = f.read()
+                        disk_files[fname] = content
+                    except Exception as e:
+                        logger.warning("Failed to read knowledge file %s: %s", fpath, e)
+
+        # Collect existing meta
+        existing_meta = {
+            m["source_path"]: m
+            for m in self._storage.list_knowledge_meta()
+            if m["source_type"] == "file"
+        }
+
+        # Find added/updated
+        for fname, content in disk_files.items():
+            file_hash = hashlib.sha256(content.encode()).hexdigest()
+            if fname not in existing_meta:
+                self._index_document(fname, content, "file", file_hash)
+                result["added"] += 1
+            elif existing_meta[fname].get("file_hash") != file_hash:
+                self._index_document(fname, content, "file", file_hash)
+                result["updated"] += 1
+
+        # Find removed
+        for fname in existing_meta:
+            if fname not in disk_files:
+                self._storage.delete_knowledge_chunks(fname)
+                self._storage.delete_knowledge_meta(fname)
+                result["removed"] += 1
+
+        return result
+
+    def _index_document(
+        self, source_path: str, content: str, source_type: str, file_hash: str | None
+    ) -> None:
+        """Chunk, embed, and store a document."""
+        chunks_text = self._split_text(content, self.config.chunk_size, self.config.chunk_overlap)
+        embeddings = self._embedder.embed_batch(chunks_text)
+        dim = self._embedder.dimension
+
+        chunk_dicts = []
+        for i, (text, vec) in enumerate(zip(chunks_text, embeddings, strict=True)):
+            chunk_dicts.append(
+                {
+                    "source_path": source_path,
+                    "chunk_index": i,
+                    "chunk_text": text,
+                    "embedding_bytes": struct.pack(f"{dim}f", *vec),
+                    "metadata_json": json.dumps({}, ensure_ascii=False),
+                }
+            )
+
+        self._storage.store_knowledge_chunks(source_path, chunk_dicts)
+        self._storage.upsert_knowledge_meta(source_path, source_type, file_hash, len(chunk_dicts))
+
+    @staticmethod
+    def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:
+        """Split text into overlapping chunks, preferring paragraph boundaries."""
+        paragraphs = re.split(r"\n\s*\n", text)
+        chunks = []
+        current = ""
+        for para in paragraphs:
+            if len(current) + len(para) <= chunk_size:
+                current += ("\n\n" + para) if current else para
+            else:
+                if current:
+                    chunks.append(current)
+                # If a single paragraph is too long, split by sentences or fixed size
+                if len(para) > chunk_size:
+                    for i in range(0, len(para), chunk_size - overlap):
+                        chunks.append(para[i : i + chunk_size])
+                else:
+                    current = para
+        if current:
+            chunks.append(current)
+        return chunks
+
+    # --- Search ---
+
+    def search(self, query: str) -> list[KnowledgeEntry]:
+        """Vector search on knowledge chunks."""
+        if not self.config.enabled:
+            return []
+        try:
+            query_vec = self._embedder.embed(query)
+            dim = len(query_vec)
+            query_bytes = struct.pack(f"{dim}f", *query_vec)
+
+            # Try vec-based search
+            try:
+                rows = self._storage.query_knowledge_chunks_vec(
+                    query_bytes, self.config.max_entries
+                )
+            except Exception:
+                rows = []
+
+            if not rows:
+                # Fallback: brute-force
+                rows = self._storage.query_knowledge_chunks(limit=15000)
+
+            entries = []
+            for row in rows:
+                source_path = row[1]
+                chunk_text = row[3]
+                emb_bytes = row[5]
+                stored_vec = struct.unpack(f"{dim}f", emb_bytes)
+                score = self._cosine_similarity(query_vec, stored_vec)
+                entries.append(
+                    KnowledgeEntry(
+                        source_path=source_path,
+                        chunk_text=chunk_text,
+                        score=score,
+                    )
+                )
+
+            entries.sort(key=lambda e: e.score, reverse=True)
+            return entries[: self.config.max_entries]
+        except Exception:
+            logger.warning("Knowledge base search failed", exc_info=True)
+            return []
+
+    @staticmethod
+    def _cosine_similarity(a, b) -> float:
+        import math
+
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)  # type: ignore[no-any-return]
+
+    # --- API Document Management ---
+
+    def add_api_document(self, source_path: str, content: str, metadata: dict) -> None:
+        """Add or update an API-uploaded document."""
+        if not source_path.startswith("api:"):
+            raise ValueError("API document source_path must start with 'api:'")
+        self._index_document(
+            source_path,
+            content,
+            "api",
+            file_hash=hashlib.sha256(content.encode()).hexdigest(),
+        )
+
+    def delete_document(self, source_path: str) -> None:
+        """Delete a document. Rejects file-type documents (managed by sync_files)."""
+        meta_list = self._storage.list_knowledge_meta()
+        meta = next((m for m in meta_list if m["source_path"] == source_path), None)
+        if meta and meta["source_type"] == "file":
+            raise ValueError(
+                f"Cannot delete file-managed document '{source_path}' via API. "
+                "Remove the file from the knowledge directory instead."
+            )
+        self._storage.delete_knowledge_chunks(source_path)
+        self._storage.delete_knowledge_meta(source_path)
+
+    def list_documents(self) -> list[dict]:
+        """List all knowledge documents with metadata."""
+        return self._storage.list_knowledge_meta()  # type: ignore[no-any-return]
