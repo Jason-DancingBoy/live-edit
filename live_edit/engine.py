@@ -9,6 +9,7 @@ import traceback
 
 from .config import Config
 from .evaluation import run_evaluation_pipeline
+from .memory import MemoryManager
 from .provider import Provider
 from .storage import Storage
 from .tools import _summarize_thinking, _tool_summary
@@ -440,10 +441,10 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=No
         session._worktree_path = ""  # prevent finally block from removing worktree
         session._commit_hash = wt_hash
 
-        sm = getattr(session, "_session_memory", None)
-        if sm is not None:
+        mem_mgr = getattr(session, "_session_memory", None)
+        if mem_mgr is not None:
             try:
-                await sm.store(
+                await mem_mgr.store(
                     session_id=session.id,
                     request=session.request,
                     files=session._modified_files,
@@ -473,48 +474,6 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=No
     except Exception as e:
         logger.error("Commit error: %s", e)
         session.emit("error", error=f"提交失败: {e}")
-
-
-def _format_memory_context(memories: list, template: str = "") -> str:
-    """Format retrieved MemoryEntry list into a compact system-prompt string.
-
-    Each entry shows request + file + diff_summary (~50-80 tokens vs ~200-300 in v1).
-    """
-    if template:
-        try:
-            items = []
-            for i, m in enumerate(memories, 1):
-                items.append(
-                    template.replace("{index}", str(i))
-                    .replace("{request}", m.request)
-                    .replace("{file}", m.file_path or "(request)")
-                    .replace("{diff_summary}", m.diff_summary or "")
-                    .replace("{stat}", m.stat or "")
-                    .replace("{commit_hash}", m.commit_hash)
-                    .replace("{score}", f"{m.score:.0%}")
-                )
-            return "\n".join(items)
-        except Exception:
-            pass
-
-    lines = [
-        "## Relevant Past Changes",
-        "",
-        "Similar past edits (reference only, adapt to current request):",
-        "",
-    ]
-    for i, m in enumerate(memories, 1):
-        file_info = f" -> {m.file_path}" if m.file_path else ""
-        lines.append(f'{i}. "{m.request}" ({m.score:.0%}){file_info}')
-        if m.diff_summary:
-            # Truncate each summary line to ~80 chars for compactness
-            summary_lines = m.diff_summary.strip().split("\n")[:3]
-            for sl in summary_lines:
-                lines.append(f"   {sl[:120]}")
-        lines.append("")
-
-    lines.append("Use the above as reference only -- do not blindly copy past solutions.")
-    return "\n".join(lines)
 
 
 async def run_edit_session(
@@ -550,32 +509,48 @@ async def run_edit_session(
             session._preview_url = preview_url
             session.emit("preview_ready", url=f"{preview_url}/app")
 
-    # ── Session memory setup (validated once at startup) ──
+    # ── Memory system setup ──
     from .embedder import LocalEmbedder
-    from .session_memory import SessionMemory
 
-    session_memory = None
-    if hasattr(config, "session_memory") and config.session_memory.enabled:
+    memory_manager = None
+    if config.memory.enabled:
         try:
-            sm_embedder = LocalEmbedder(model_name=config.session_memory.embedder.model)
-            # Validate embedding works before using in session
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, sm_embedder.embed, "test")
-            session_memory = SessionMemory(
-                storage=storage,
-                embedder=sm_embedder,
-                config=config.session_memory,
-            )
+            sm_config = config.memory.long_term
+            if sm_config.enabled:
+                sm_embedder = LocalEmbedder(model_name=sm_config.embedder.model)
+                # Validate embedding works
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, sm_embedder.embed, "test")
+            else:
+                sm_embedder = LocalEmbedder(model_name="thenlper/gte-small")
         except ImportError:
             logger.warning(
-                "session_memory.enabled=true but sentence-transformers is not "
+                "memory.long_term.enabled=true but sentence-transformers is not "
                 "installed. Install with: pip install live-edit[rag]"
             )
+            sm_embedder = None
         except Exception as e:
-            logger.warning("Session memory disabled: embedding model failed to load: %s", e)
+            logger.warning("Memory embedder failed to load: %s", e)
+            sm_embedder = None
 
-    # Store on session so _do_commit can use it
-    session._session_memory = session_memory  # type: ignore[assignment]
+        if sm_embedder is not None:
+            memory_manager = MemoryManager(
+                storage=storage,
+                embedder=sm_embedder,
+                config=config.memory,
+                provider=provider,
+            )
+            # Sync knowledge files at startup
+            if config.memory.knowledge.enabled and config.memory.knowledge.knowledge_dir:
+                try:
+                    project_root = config.project.root or "."
+                    result = memory_manager.sync_knowledge_files(project_root)
+                    if any(v > 0 for v in result.values()):
+                        logger.info("Knowledge base synced: %s", result)
+                except Exception as e:
+                    logger.warning("Knowledge base sync failed: %s", e)
+
+    session._session_memory = memory_manager  # type: ignore[assignment]
 
     if continue_msg and session.messages:
         messages = session.messages
@@ -590,31 +565,35 @@ async def run_edit_session(
         _repair_messages(messages)
         messages.append({"role": "user", "content": continue_msg})
 
-        # ── Retrieve session memory for continuation ──
-        if session_memory is not None:
+        # ── Retrieve memory context for continuation ──
+        if memory_manager is not None:
             try:
-                memories = await session_memory.retrieve(continue_msg)
-                if memories:
-                    memory_context = _format_memory_context(
-                        memories, config.session_memory.memory_prompt_template
-                    )
+                memory_context, messages = await memory_manager.retrieve(
+                    query=continue_msg,
+                    session_id=session.id,
+                    messages=messages,
+                    round_num=0,
+                )
+                if memory_context:
                     messages.append({"role": "user", "content": memory_context})
             except Exception as e:
-                logger.warning("Failed to retrieve session memory for continuation: %s", e)
+                logger.warning("Failed to retrieve memory for continuation: %s", e)
     else:
         messages = [
             {"role": "user", "content": system_prompt},
             {"role": "user", "content": session.request},
         ]
 
-        # ── Retrieve session memory for context ──
-        if session_memory is not None and not continue_msg:
+        # ── Retrieve memory context ──
+        if memory_manager is not None and not continue_msg:
             try:
-                memories = await session_memory.retrieve(session.request)
-                if memories:
-                    memory_context = _format_memory_context(
-                        memories, config.session_memory.memory_prompt_template
-                    )
+                memory_context, messages = await memory_manager.retrieve(
+                    query=session.request,
+                    session_id=session.id,
+                    messages=messages,
+                    round_num=1,  # L1 should act at least on the first round
+                )
+                if memory_context:
                     system_prompt += "\n\n" + memory_context
                     messages[0]["content"] = system_prompt
             except Exception as e:
@@ -661,6 +640,23 @@ async def run_edit_session(
             def _on_text(t, _tc=text_chunks):
                 _tc.append(t)
                 session.emit("text", text=t)
+
+            # Manage the L1 window before each provider turn.
+            if memory_manager is not None:
+                try:
+                    messages, l1_summary = await memory_manager.manage_messages_async(
+                        messages, round_num, provider
+                    )
+                    if l1_summary:
+                        # Optionally surface the L1 summary into the context
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"[Prior rounds summarized] {l1_summary}",
+                            }
+                        )
+                except Exception as e:
+                    logger.warning("L1 window management failed: %s", e)
 
             content_blocks = await provider.call_with_tools(
                 messages=messages,

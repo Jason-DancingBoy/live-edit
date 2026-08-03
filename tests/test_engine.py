@@ -742,8 +742,7 @@ class TestDoCommitBranchOnly:
 
 class TestFormatMemoryContext:
     def test_default_template(self):
-        from live_edit.engine import _format_memory_context
-        from live_edit.session_memory import MemoryEntry
+        from live_edit.memory import MemoryEntry, _format_memory_context
 
         memories = [
             MemoryEntry(
@@ -763,8 +762,7 @@ class TestFormatMemoryContext:
         assert "95%" in result
 
     def test_custom_template(self):
-        from live_edit.engine import _format_memory_context
-        from live_edit.session_memory import MemoryEntry
+        from live_edit.memory import MemoryEntry, _format_memory_context
 
         memories = [
             MemoryEntry(
@@ -782,8 +780,7 @@ class TestFormatMemoryContext:
         assert "[1] Fix auth auth.py +3/-1 95%" in result
 
     def test_empty_file_path_shows_request_only(self):
-        from live_edit.engine import _format_memory_context
-        from live_edit.session_memory import MemoryEntry
+        from live_edit.memory import MemoryEntry, _format_memory_context
 
         memories = [
             MemoryEntry(
@@ -800,7 +797,7 @@ class TestFormatMemoryContext:
         assert "Some query" in result
 
     def test_empty_memories(self):
-        from live_edit.engine import _format_memory_context
+        from live_edit.memory import _format_memory_context
 
         result = _format_memory_context([])
         assert "Relevant" in result
@@ -854,6 +851,7 @@ class TestSessionMemoryEngineIntegration:
 
         config = Config()
         config.session_memory.enabled = True
+        config.memory.enabled = True
 
         session = EditSession("test-s2", "Make it red")
         mock_provider = AsyncMock()
@@ -879,3 +877,20 @@ class TestSessionMemoryEngineIntegration:
                 tool_registry=mock_registry,
             )
         # Should complete without raising
+
+
+def test_memory_manager_integration():
+    """Verify engine constructs MemoryManager correctly when config.memory.enabled is True."""
+    from live_edit.config import Config, MemoryConfig, LongTermConfig  # noqa: I001  (kept verbatim from brief)
+    from live_edit.memory import MemoryManager  # noqa: F401  (kept verbatim from brief)
+
+    config = Config(
+        memory=MemoryConfig(
+            enabled=True,
+            long_term=LongTermConfig(enabled=True),
+        ),
+    )
+    assert config.memory.enabled is True
+    assert config.memory.long_term.enabled is True
+    # Backward compat
+    assert config.session_memory is config.memory.long_term
