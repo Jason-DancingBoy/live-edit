@@ -10,7 +10,7 @@ import re
 import struct
 from dataclasses import dataclass
 
-from .config import KnowledgeConfig, LongTermConfig, ShortTermConfig
+from .config import KnowledgeConfig, LongTermConfig, MemoryConfig, ShortTermConfig
 
 logger = logging.getLogger("live-edit.memory")
 
@@ -700,3 +700,207 @@ class KnowledgeBase:
     def list_documents(self) -> list[dict]:
         """List all knowledge documents with metadata."""
         return self._storage.list_knowledge_meta()  # type: ignore[no-any-return]
+
+
+class MemoryManager:
+    """Unified three-tier memory. Engine calls this single entry point."""
+
+    def __init__(self, storage, embedder, config: MemoryConfig, provider=None):
+        self.config = config
+        self._storage = storage
+        self._provider = provider
+        self._short_term = ShortTermMemory(config.short_term) if config.enabled else None
+        self._long_term = (
+            LongTermMemory(storage, embedder, config.long_term)
+            if config.enabled and config.long_term.enabled
+            else None
+        )
+        self._knowledge = (
+            KnowledgeBase(storage, embedder, config.knowledge)
+            if config.enabled and config.knowledge.enabled
+            else None
+        )
+
+    def manage_messages(self, messages: list[dict], round_num: int) -> tuple[list[dict], str]:
+        """L1-only window management (strip/summarize). Returns (updated_messages, summary)."""
+        if self._short_term is None:
+            return messages, ""
+        return self._short_term.manage(messages, round_num)
+
+    async def manage_messages_async(
+        self, messages: list[dict], round_num: int, provider=None
+    ) -> tuple[list[dict], str]:
+        """Async L1-only window management. Returns (updated_messages, summary)."""
+        if self._short_term is None:
+            return messages, ""
+        return await self._short_term.manage_async(messages, round_num, provider)
+
+    async def retrieve(
+        self, query: str, session_id: str, messages: list[dict], round_num: int
+    ) -> tuple[str, list[dict]]:
+        """Return (context_string, updated_messages).
+
+        context_string is injected into system prompt or appended as a message.
+        updated_messages may have old rounds stripped/compressed by L1.
+        """
+        parts: list[str] = []
+        updated_messages = messages
+
+        # L1: window management
+        if self._short_term is not None:
+            updated_messages, summary = await self._short_term.manage_async(
+                messages, round_num, self._provider
+            )
+            if summary:
+                parts.append(summary)
+
+        # L2: long-term memory
+        if self._long_term is not None:
+            memories = await self._long_term.retrieve(query)
+            if memories:
+                parts.append(
+                    _format_memory_context(memories, self.config.long_term.memory_prompt_template)
+                )
+                memories_hit = True
+            else:
+                memories_hit = False
+        else:
+            memories_hit = False
+
+        # L3: knowledge — fires when L2 is disabled or returned empty
+        if self._knowledge is not None and not memories_hit:
+            knowledge_entries = self._knowledge.search(query)
+            if knowledge_entries:
+                parts.append(_format_knowledge_context(knowledge_entries))
+
+        context = "\n\n".join(parts)
+        return context, updated_messages
+
+    def retrieve_sync(
+        self, query: str, session_id: str, messages: list[dict], round_num: int
+    ) -> tuple[str, list[dict]]:
+        """Synchronous version for testing."""
+        parts: list[str] = []
+        updated_messages = messages
+
+        if self._short_term is not None:
+            updated_messages, summary = self._short_term.manage(messages, round_num)
+            if summary:
+                parts.append(summary)
+
+        if self._long_term is not None:
+            memories = self._long_term.retrieve_sync(query)
+            if memories:
+                parts.append(
+                    _format_memory_context(memories, self.config.long_term.memory_prompt_template)
+                )
+                memories_hit = True
+            else:
+                memories_hit = False
+        else:
+            memories_hit = False
+
+        # L3: knowledge — fires when L2 is disabled or returned empty
+        if self._knowledge is not None and not memories_hit:
+            knowledge_entries = self._knowledge.search(query)
+            if knowledge_entries:
+                parts.append(_format_knowledge_context(knowledge_entries))
+
+        return "\n\n".join(parts), updated_messages
+
+    async def store(
+        self,
+        session_id: str,
+        request: str,
+        files: list[str],
+        diff: str,
+        commit_hash: str,
+    ) -> None:
+        """Store session in L2 long-term memory."""
+        if self._long_term is not None:
+            await self._long_term.store(session_id, request, files, diff, commit_hash)
+
+    def store_sync(
+        self, session_id: str, request: str, files: list[str], diff: str, commit_hash: str
+    ) -> None:
+        """Synchronous store for testing. Uses a fresh loop when none is running."""
+        import asyncio
+
+        if self._long_term is None:
+            return
+        coro = self._long_term.store(session_id, request, files, diff, commit_hash)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(coro)
+        else:
+            asyncio.get_running_loop().create_task(coro)
+
+    def sync_knowledge_files(self, project_root: str) -> dict:
+        """Sync L3 knowledge files. Called at startup."""
+        if self._knowledge is not None:
+            return self._knowledge.sync_files(project_root)
+        return {}
+
+    def add_knowledge(self, source_path: str, content: str, metadata: dict) -> None:
+        if self._knowledge is None:
+            raise RuntimeError("Knowledge base is not enabled")
+        self._knowledge.add_api_document(source_path, content, metadata)
+
+    def delete_knowledge(self, source_path: str) -> None:
+        if self._knowledge is None:
+            raise RuntimeError("Knowledge base is not enabled")
+        self._knowledge.delete_document(source_path)
+
+    def list_knowledge(self) -> list[dict]:
+        if self._knowledge is None:
+            return []
+        return self._knowledge.list_documents()
+
+
+def _format_memory_context(memories: list[MemoryEntry], template: str = "") -> str:
+    """Format L2 MemoryEntry list for injection (ported from engine.py)."""
+    if template:
+        try:
+            items = []
+            for i, m in enumerate(memories, 1):
+                items.append(
+                    template.replace("{index}", str(i))
+                    .replace("{request}", m.request)
+                    .replace("{file}", m.file_path or "(request)")
+                    .replace("{diff_summary}", m.diff_summary or "")
+                    .replace("{stat}", m.stat or "")
+                    .replace("{commit_hash}", m.commit_hash)
+                    .replace("{score}", f"{min(m.score, 1.0):.0%}")
+                )
+            return "\n".join(items)
+        except Exception:
+            pass
+
+    lines = [
+        "## Relevant Past Changes",
+        "",
+        "Similar past edits (reference only, adapt to current request):",
+        "",
+    ]
+    for i, m in enumerate(memories, 1):
+        file_info = f" -> {m.file_path}" if m.file_path else ""
+        # hit bonus may push score above 1.0; clamp for display
+        lines.append(f'{i}. "{m.request}" ({min(m.score, 1.0):.0%}){file_info}')
+        if m.diff_summary:
+            summary_lines = m.diff_summary.strip().split("\n")[:3]
+            for sl in summary_lines:
+                lines.append(f"   {sl[:120]}")
+        lines.append("")
+    lines.append("Use the above as reference only -- do not blindly copy past solutions.")
+    return "\n".join(lines)
+
+
+def _format_knowledge_context(entries: list[KnowledgeEntry]) -> str:
+    """Format L3 KnowledgeEntry list for injection."""
+    lines = ["## Project Knowledge", ""]
+    for e in entries:
+        fname = e.source_path
+        text = e.chunk_text[:300].replace("\n", " ")
+        lines.append(f'- {fname}: "{text}..."')
+    return "\n".join(lines)

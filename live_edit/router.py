@@ -43,6 +43,12 @@ class ApproveRequest(BaseModel):
     approved: bool = True
 
 
+class KnowledgeUpload(BaseModel):
+    source_path: str
+    content: str
+    metadata: str = "{}"
+
+
 def _resolve_api_key(config) -> str:
     """Resolve API key from environment variable named in config."""
     env_var = getattr(config.llm, "api_key_env", "") if hasattr(config, "llm") else ""
@@ -399,6 +405,57 @@ def setup_live_edit(
             "status": "ok",
             "active_sessions": session_store.count,
         }
+
+    # ── Knowledge base endpoints ──
+
+    @router.post("/knowledge")
+    async def upload_knowledge(request: Request, body: KnowledgeUpload) -> dict:
+        """Upload a document snippet to the knowledge base."""
+        try:
+            meta = json.loads(body.metadata)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail="metadata must be valid JSON") from e
+
+        if not body.source_path.startswith("api:"):
+            raise HTTPException(
+                status_code=400,
+                detail="source_path must start with 'api:' for API-uploaded documents",
+            )
+
+        mem_mgr = getattr(request.app.state, "memory_manager", None)
+        if mem_mgr is None:
+            raise HTTPException(status_code=503, detail="Memory system not available")
+
+        try:
+            mem_mgr.add_knowledge(body.source_path, body.content, meta)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        return {"ok": True, "source_path": body.source_path}
+
+    @router.delete("/knowledge/{source_path:path}")
+    async def delete_knowledge(request: Request, source_path: str) -> dict:
+        """Delete an API-uploaded knowledge document."""
+        mem_mgr = getattr(request.app.state, "memory_manager", None)
+        if mem_mgr is None:
+            raise HTTPException(status_code=503, detail="Memory system not available")
+
+        try:
+            mem_mgr.delete_knowledge(source_path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        return {"ok": True}
+
+    @router.get("/knowledge")
+    async def list_knowledge(request: Request) -> dict:
+        """List all knowledge base documents."""
+        mem_mgr = getattr(request.app.state, "memory_manager", None)
+        if mem_mgr is None:
+            return {"documents": []}
+        return {"documents": mem_mgr.list_knowledge()}
 
     # ── Preview reverse proxy (routes to session's uvicorn on 127.0.0.1) ──
 
