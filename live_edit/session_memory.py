@@ -38,6 +38,9 @@ class SessionMemory:
 
         Uses PRAGMA user_version as migration gate:
           0 = not migrated (or fresh DB), 1 = migration complete.
+        SQLiteStorage now auto-migrates a fresh DB to schema v2 (hit_count /
+        last_accessed + vec tables); the v1 session_embeddings migration must
+        still run in that case, but it must never downgrade user_version below 2.
 
         INSERT OR IGNORE with a temp unique index on (session_id, chunk_type)
         guarantees crash-safe re-runs.
@@ -48,15 +51,16 @@ class SessionMemory:
             return  # FakeStorage in tests -- skip
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version >= 1:
-            return
+        if version == 1:
+            return  # v1 migration already complete
 
         # Check old table exists
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='session_embeddings'"
         ).fetchone()
         if not exists:
-            conn.execute("PRAGMA user_version = 1")
+            if version < 2:
+                conn.execute("PRAGMA user_version = 1")
             conn.commit()
             return
 
@@ -84,7 +88,8 @@ class SessionMemory:
                    FROM session_embeddings"""
             )
             conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
-            conn.execute("PRAGMA user_version = 1")
+            if version < 2:
+                conn.execute("PRAGMA user_version = 1")
             conn.commit()
             count = conn.execute("SELECT COUNT(*) FROM session_chunks").fetchone()[0]
             logger.info("Migration complete: %d chunks in session_chunks", count)
@@ -97,7 +102,8 @@ class SessionMemory:
                 "To retry migration, run: PRAGMA user_version = 0",
                 exc_info=True,
             )
-            conn.execute("PRAGMA user_version = 1")
+            if version < 2:
+                conn.execute("PRAGMA user_version = 1")
             conn.commit()
 
     # --- Public API ---

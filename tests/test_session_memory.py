@@ -333,7 +333,8 @@ class TestMigration:
 
     def test_migration_copies_old_data(self, real_sqlite_storage):
         storage = real_sqlite_storage
-        assert storage.get_db_version() == 0
+        # SQLiteStorage auto-migrates a fresh DB to schema v2 on init
+        assert storage.get_db_version() == 2
 
         # Create SessionMemory with a fake embedder; migration runs in __init__
         sm = SessionMemory(  # noqa: F841
@@ -349,15 +350,16 @@ class TestMigration:
         assert payload.get("migrated") is True
         assert payload.get("request") == "add feature X"
 
-    def test_migration_sets_version(self, real_sqlite_storage):
+    def test_migration_keeps_v2_schema(self, real_sqlite_storage):
         storage = real_sqlite_storage
-        assert storage.get_db_version() == 0
+        assert storage.get_db_version() == 2
         SessionMemory(
             storage=storage,
             embedder=FakeEmbedder(dim=4),
             config=SessionMemoryConfig(enabled=True),
         )
-        assert storage.get_db_version() == 1
+        # The v1 migration still runs but must not downgrade the v2 schema
+        assert storage.get_db_version() == 2
 
     def test_migration_idempotent(self, real_sqlite_storage):
         storage = real_sqlite_storage
@@ -401,13 +403,13 @@ class TestMigration:
         from live_edit.storage import SQLiteStorage
 
         storage = SQLiteStorage(db_path)
-        assert storage.get_db_version() == 0
+        assert storage.get_db_version() == 2
 
         SessionMemory(
             storage=storage,
             embedder=FakeEmbedder(dim=4),
             config=SessionMemoryConfig(enabled=True),
         )
-        # Should set version without errors
-        assert storage.get_db_version() == 1
+        # Should preserve the v2 schema without errors
+        assert storage.get_db_version() == 2
         assert storage.query_chunks() == []

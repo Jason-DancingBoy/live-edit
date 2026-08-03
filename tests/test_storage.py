@@ -276,8 +276,9 @@ class TestSessionChunks:
         assert len(rows) == 1
         assert rows[0][4] == "original"
 
-    def test_db_version_defaults_to_zero(self, storage):
-        assert storage.get_db_version() == 0
+    def test_db_version_migrates_to_v2_on_init(self, storage):
+        # Fresh DB is auto-migrated to schema v2 during __init__
+        assert storage.get_db_version() == 2
 
     def test_set_and_get_db_version(self, storage):
         storage.set_db_version(1)
@@ -298,3 +299,161 @@ class TestSessionChunks:
             storage.store_chunks(f"s{i}", "hash", chunks)
         rows = storage.query_chunks(limit=3)
         assert len(rows) == 3
+
+
+class TestMigrationV2:
+    def test_adds_hit_columns_to_session_chunks(self, tmp_path):
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+        conn = store._get_conn()
+
+        # Verify columns exist after migration
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(session_chunks)")]
+        assert "hit_count" in cols
+        assert "last_accessed" in cols
+
+    def test_migration_idempotent(self, tmp_path):
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store1 = SQLiteStorage(str(db))
+        conn1 = store1._get_conn()
+        version1 = conn1.execute("PRAGMA user_version").fetchone()[0]
+
+        # Re-open and re-migrate
+        store2 = SQLiteStorage(str(db))
+        conn2 = store2._get_conn()
+        version2 = conn2.execute("PRAGMA user_version").fetchone()[0]
+
+        assert version1 == version2
+
+    def test_backfills_vec_table(self, tmp_path):
+        # Requires sqlite-vec (installed via the dev/rag extras); skip otherwise.
+        pytest.importorskip("sqlite_vec")
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+
+        # Insert a chunk manually
+        conn = store._get_conn()
+        import struct
+
+        emb = struct.pack("384f", *[0.1] * 384)
+        conn.execute(
+            """INSERT INTO session_chunks
+               (session_id, commit_hash, chunk_type, chunk_text,
+                payload_json, file_path, embedding)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("s1", "abc", "request", "test request", "{}", "", emb),
+        )
+        conn.commit()
+
+        # Simulate a pre-v2 DB so the migration's backfill re-runs on reopen
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+
+        # Re-open to trigger migration (vec backfill)
+        store2 = SQLiteStorage(str(db))
+        conn2 = store2._get_conn()
+        count = conn2.execute("SELECT COUNT(*) FROM session_chunks_vec").fetchone()[0]
+        assert count == 1
+
+
+class TestKnowledgeCRUD:
+    def test_store_and_query_knowledge_chunks(self, tmp_path):
+        import struct
+
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+        emb = struct.pack("384f", *[0.1] * 384)
+
+        chunks = [
+            {
+                "source_path": "api:test",
+                "chunk_index": 0,
+                "chunk_text": "some knowledge",
+                "embedding_bytes": emb,
+                "metadata_json": '{"title": "Test"}',
+            }
+        ]
+        store.store_knowledge_chunks("api:test", chunks)
+        store.upsert_knowledge_meta("api:test", "api", None, 1)
+
+        rows = store.query_knowledge_chunks(limit=10)
+        assert len(rows) == 1
+        assert rows[0][1] == "api:test"
+
+    def test_delete_knowledge_chunks(self, tmp_path):
+        import struct
+
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+        emb = struct.pack("384f", *[0.1] * 384)
+
+        store.store_knowledge_chunks(
+            "api:test",
+            [
+                {
+                    "source_path": "api:test",
+                    "chunk_index": 0,
+                    "chunk_text": "x",
+                    "embedding_bytes": emb,
+                    "metadata_json": "{}",
+                }
+            ],
+        )
+        store.upsert_knowledge_meta("api:test", "api", None, 1)
+        store.delete_knowledge_chunks("api:test")
+        store.delete_knowledge_meta("api:test")
+
+        rows = store.query_knowledge_chunks(limit=10)
+        assert len(rows) == 0
+
+    def test_list_knowledge_meta(self, tmp_path):
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+
+        store.upsert_knowledge_meta("doc1.md", "file", "abc123", 3)
+        store.upsert_knowledge_meta("doc2.md", "file", "def456", 1)
+
+        meta = store.list_knowledge_meta()
+        assert len(meta) == 2
+        paths = {m["source_path"] for m in meta}
+        assert paths == {"doc1.md", "doc2.md"}
+
+    def test_update_chunk_hit_counts(self, tmp_path):
+        import struct
+
+        from live_edit.storage import SQLiteStorage
+
+        db = tmp_path / "test.db"
+        store = SQLiteStorage(str(db))
+        emb = struct.pack("384f", *[0.1] * 384)
+        conn = store._get_conn()
+        conn.execute(
+            """INSERT INTO session_chunks
+               (session_id, commit_hash, chunk_type, chunk_text,
+                payload_json, file_path, embedding)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("s1", "abc", "request", "req", "{}", "", emb),
+        )
+        conn.commit()
+        chunk_id = conn.execute("SELECT id FROM session_chunks").fetchone()[0]
+
+        store.update_chunk_hit_counts([chunk_id])
+
+        row = conn.execute(
+            "SELECT hit_count, last_accessed FROM session_chunks WHERE id = ?",
+            (chunk_id,),
+        ).fetchone()
+        assert row["hit_count"] == 1
+        assert row["last_accessed"] is not None
