@@ -162,6 +162,21 @@ model = "sentence-transformers/all-MiniLM-L6-v2"
         assert lt.embedder.model == "sentence-transformers/all-MiniLM-L6-v2"
         assert config.session_memory is lt
 
+    def test_legacy_session_memory_activates_memory_when_no_memory_section(self, tmp_path):
+        """[session_memory] enabled=true alone must still activate the memory master switch."""
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[session_memory]
+enabled = true
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        assert config.memory.enabled is True
+        assert config.memory.long_term.enabled is True
+
     def test_memory_long_term_takes_priority_over_session_memory(self, tmp_path):
         toml_path = tmp_path / ".live-edit.toml"
         toml_path.write_text(
