@@ -2,12 +2,32 @@
 import pytest
 
 from live_edit.config import (
+    Config,
     KnowledgeConfig,
     LongTermConfig,
     MemoryConfig,
     SessionMemoryConfig,
     ShortTermConfig,
+    parse_config,
 )
+
+
+def _base_toml(extra: str = "") -> str:
+    """A minimal parseable .live-edit.toml with optional extra sections appended."""
+    return f"""
+[project]
+name = "TestApp"
+language = "python"
+
+[llm]
+api_url = "https://api.example.com"
+api_key_env = "KEY"
+model = "m1"
+
+[modes.quick]
+label = "Quick"
+{extra}
+"""
 
 
 class TestShortTermConfig:
@@ -110,3 +130,114 @@ class TestSessionMemoryConfigAlias:
         cfg = SessionMemoryConfig(enabled=True, max_entries=5)
         assert cfg.enabled is True
         assert cfg.max_entries == 5
+
+
+class TestParseMemoryConfig:
+    def test_session_memory_only_config(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[session_memory]
+enabled = true
+max_entries = 42
+similarity_threshold = 0.75
+max_stored_entries = 999
+memory_prompt_template = "custom template"
+
+[session_memory.embedder]
+type = "huggingface"
+model = "sentence-transformers/all-MiniLM-L6-v2"
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        lt = config.memory.long_term
+        assert lt.enabled is True
+        assert lt.max_entries == 42
+        assert lt.similarity_threshold == 0.75
+        assert lt.max_stored_entries == 999
+        assert lt.memory_prompt_template == "custom template"
+        assert lt.embedder.type == "huggingface"
+        assert lt.embedder.model == "sentence-transformers/all-MiniLM-L6-v2"
+        assert config.session_memory is lt
+
+    def test_memory_long_term_takes_priority_over_session_memory(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[session_memory]
+enabled = true
+max_entries = 10
+
+[memory.long_term]
+enabled = false
+max_entries = 77
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        lt = config.memory.long_term
+        assert lt.enabled is False
+        assert lt.max_entries == 77
+
+    def test_embedder_prefers_memory_long_term_over_session_memory(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[session_memory.embedder]
+type = "session-type"
+model = "session-model"
+
+[memory.long_term.embedder]
+type = "openai"
+model = "memory-model"
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        lt = config.memory.long_term
+        assert lt.embedder.type == "openai"
+        assert lt.embedder.model == "memory-model"
+
+    def test_embedder_falls_back_to_session_memory(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            _base_toml(
+                """
+[session_memory.embedder]
+type = "session-type"
+model = "session-model"
+"""
+            )
+        )
+        config = parse_config(str(toml_path))
+        lt = config.memory.long_term
+        assert lt.embedder.type == "session-type"
+        assert lt.embedder.model == "session-model"
+
+    def test_embedder_default_when_neither_section(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(_base_toml())
+        config = parse_config(str(toml_path))
+        lt = config.memory.long_term
+        assert lt.embedder.type == "local"
+        assert lt.embedder.model == "thenlper/gte-small"
+
+    def test_empty_memory_section_uses_defaults(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(_base_toml("\n[memory]\n"))
+        config = parse_config(str(toml_path))
+        memory = config.memory
+        assert memory.enabled is False
+        assert memory.long_term.enabled is False
+        assert memory.short_term.enabled is True
+        assert memory.knowledge.enabled is False
+
+    def test_session_memory_property_setter(self):
+        config = Config()
+        replacement = LongTermConfig(enabled=True, max_entries=5)
+        config.session_memory = replacement
+        assert config.memory.long_term is replacement
