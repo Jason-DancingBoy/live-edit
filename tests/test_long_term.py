@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math  # noqa: F401  (kept verbatim from brief)
 import struct
@@ -20,9 +21,11 @@ class FakeEmbedder:
         self._dim = dim
 
     def embed(self, text: str) -> list[float]:
-        # Simple hash-based embedding for deterministic testing
-        h = abs(hash(text)) % 1000
-        return [h / 1000.0] * self._dim
+        # Deterministic and always non-zero: constant vectors in [0.5, 1.0),
+        # so cosine similarity between any two is exactly 1.0 (no zero-vector flake).
+        h = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16)
+        v = 0.5 + (h % 1000) / 2000.0
+        return [v] * self._dim
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [self.embed(t) for t in texts]
@@ -195,8 +198,8 @@ class TestLongTermMemory:
 
         results = ltm.retrieve_sync("old edit")
         # Score should be heavily decayed by exp(-1.0 * 100) ≈ 0
-        if results:
-            assert results[0].score < 0.1
+        assert len(results) > 0
+        assert results[0].score < 0.1
 
     def test_hit_count_gives_bonus(self):
         cfg = LongTermConfig(
@@ -227,9 +230,9 @@ class TestLongTermMemory:
         storage.chunks[0]["hit_count"] = 10  # max bonus
 
         results = ltm.retrieve_sync("popular edit")
-        if results:
-            # Score should include hit bonus
-            assert results[0].score > 0.4  # base ~0.5 + 0.05*min(10,10)
+        # Score should include hit bonus: base ~1.0 + 0.05*min(10,10) = 1.5
+        assert len(results) > 0
+        assert results[0].score > 1.0  # fails if hit bonus were removed (baseline 1.0)
 
     def test_hit_count_capped_at_10(self):
         cfg = LongTermConfig(
@@ -260,6 +263,6 @@ class TestLongTermMemory:
         storage.chunks[0]["hit_count"] = 50  # way over cap
 
         results = ltm.retrieve_sync("viral edit")
-        if results:
-            # Bonus should be 0.05 * 10 = 0.5, not 0.05 * 50 = 2.5
-            assert results[0].score <= 1.0 + 0.5 + 0.05  # within bounds
+        # Bonus should be 0.05 * 10 = 0.5, not 0.05 * 50 = 2.5
+        assert len(results) > 0
+        assert results[0].score <= 1.0 + 0.5 + 0.05  # within bounds
