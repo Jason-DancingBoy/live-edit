@@ -92,3 +92,18 @@ class TestShortTermMemory:
         first_user = result[1]
         assert "edit_file" in str(first_user["content"])
         assert "file0.py" in str(first_user["content"])
+
+    def test_strips_all_rounds_when_max_full_rounds_zero(self):
+        cfg = ShortTermConfig(max_full_rounds=0, max_stripped_rounds=3, max_summary_rounds=20)
+        sm = ShortTermMemory(cfg)
+        msgs = make_messages(3)  # 6 messages
+        result, summary = sm.manage(msgs, round_num=3)
+        assert summary == ""
+        assert len(result) == len(msgs)  # no duplication
+        # every round is stripped: user messages become string one-liners
+        # (no tool_result blocks remain), assistant messages preserved as-is
+        for msg in result:
+            if msg["role"] == "user":
+                assert isinstance(msg["content"], str)
+            else:
+                assert isinstance(msg["content"], list)  # assistant preserved

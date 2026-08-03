@@ -124,7 +124,7 @@ class ShortTermMemory:
                 result.append(msg)
 
         # Append the last keep_msgs messages unchanged
-        result.extend(messages[-keep_msgs:])
+        result.extend(messages[-keep_msgs:] if keep_msgs else [])
         return result
 
     async def _summarize(self, messages: list[dict], keep_full: int, provider) -> str:
