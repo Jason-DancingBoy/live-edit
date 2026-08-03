@@ -449,11 +449,23 @@ class SQLiteStorage(Storage):
                     CREATE VIRTUAL TABLE IF NOT EXISTS {vec_table}
                     USING vec0(rowid INTEGER PRIMARY KEY, embedding FLOAT[{embedder_dim}])
                 """)
-                conn.execute(f"""
-                    INSERT INTO {vec_table} (rowid, embedding)
-                    SELECT id, embedding FROM {parent_table}
-                """)
-                conn.commit()
+                try:
+                    conn.execute(f"""
+                        INSERT INTO {vec_table} (rowid, embedding)
+                        SELECT id, embedding FROM {parent_table}
+                    """)
+                    conn.commit()
+                except Exception:
+                    # Stale-dimension rows cannot be indexed into the new table;
+                    # mark vec degraded so queries fall back to brute-force.
+                    self._vec_loaded = False
+                    conn.rollback()
+                    logger.warning(
+                        "Could not re-index %s to dimension %s (stale embeddings); "
+                        "brute-force fallback will be used",
+                        vec_table,
+                        embedder_dim,
+                    )
             except Exception:
                 logger.warning(
                     "Could not ensure %s dimension %s; using brute-force fallback",
@@ -608,6 +620,8 @@ class SQLiteStorage(Storage):
     ) -> list[tuple] | None:
         """sqlite-vec coarse search. Returns None if vec unavailable."""
         conn = self._get_conn()
+        if not self._vec_loaded:
+            return None
         try:
             rows = conn.execute(
                 """SELECT sc.id, sc.session_id, sc.commit_hash, sc.chunk_type,

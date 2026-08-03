@@ -145,6 +145,54 @@ class TestLongTermMemory:
         results = ltm.retrieve_sync("fix auth bug")
         assert len(results) > 0
 
+    def test_retrieve_skips_malformed_embedding_row(self):
+        """A malformed embedding BLOB (wrong dimension) must not zero the whole query."""
+        cfg = LongTermConfig(
+            enabled=True,
+            max_entries=5,
+            similarity_threshold=0.0,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+        )
+        storage = FakeStorage()
+        embedder = FakeEmbedder(dim=384)
+        ltm = LongTermMemory(storage, embedder, cfg)
+
+        good_emb = struct.pack("384f", *[0.5] * 384)
+        bad_emb = struct.pack("16f", *[0.5] * 16)  # wrong length for a dim-384 unpack
+
+        storage.store_chunks(
+            "s-good",
+            "hash1",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "fix login bug",
+                    "payload_json": json.dumps({"request": "fix login bug"}),
+                    "file_path": "",
+                    "embedding_bytes": good_emb,
+                },
+            ],
+        )
+        storage.store_chunks(
+            "s-bad",
+            "hash2",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "malformed row",
+                    "payload_json": json.dumps({"request": "malformed row"}),
+                    "file_path": "",
+                    "embedding_bytes": bad_emb,
+                },
+            ],
+        )
+
+        results = ltm.retrieve_sync("fix login bug")
+        assert len(results) >= 1
+        assert results[0].request == "fix login bug"
+        assert all(r.session_id == "s-good" for r in results)
+
     def test_store_creates_chunks(self):
         cfg = LongTermConfig(enabled=True)
         storage = FakeStorage()

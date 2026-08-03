@@ -479,7 +479,10 @@ class LongTermMemory:
             emb_bytes = row[7] if len(row) > 7 else b""
             chunk_id = row[0]
 
-            stored_vec = struct.unpack(f"{dim}f", emb_bytes)
+            try:
+                stored_vec = struct.unpack(f"{dim}f", emb_bytes)
+            except struct.error:
+                continue  # malformed or stale-dimension embedding; skip this row
             cosine = self._cosine_similarity(query_vec, stored_vec)
             if cosine < self.config.similarity_threshold:
                 continue
