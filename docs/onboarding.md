@@ -90,6 +90,29 @@ enabled = true
 
 启用后 agent 会检索类似历史编辑会话作为上下文参考。需要先安装 `live-edit[rag]`。
 
+### Session Memory → Memory System (v0.3.0+)
+
+The `[session_memory]` section is deprecated in favor of `[memory]`:
+
+```toml
+[memory]
+enabled = true
+
+[memory.short_term]
+max_full_rounds = 3
+
+[memory.long_term]
+enabled = true
+embedder = { type = "local", model = "thenlper/gte-small" }
+
+[memory.knowledge]
+enabled = true
+knowledge_dir = ".live-edit/knowledge"
+```
+
+The old `[session_memory]` section still works but maps to `[memory.long_term]`.
+New features like recency decay and knowledge base are only available via `[memory]`.
+
 ## 4. 代码接入
 
 ### 4.1 Python 后端（2 行）

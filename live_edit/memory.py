@@ -211,7 +211,13 @@ class LongTermMemory:
                 logger.warning("vec dimension check failed; using brute-force fallback")
 
     def _migrate_if_needed(self) -> None:
-        """Delegate schema migration to storage (idempotent; storage auto-migrates at init)."""
+        """Delegate schema migration to storage, then copy any legacy v1 data.
+
+        The storage auto-migrates a fresh DB to schema v2 (hit_count /
+        last_accessed + vec tables). DBs created before v2 also have a v1
+        `session_embeddings` table whose rows must be copied into
+        `session_chunks` so existing session memory survives the upgrade.
+        """
         if not hasattr(self._storage, "_migrate_to_memory_v2"):
             return  # FakeStorage in tests
         try:
@@ -219,6 +225,76 @@ class LongTermMemory:
         except Exception:
             logger.warning(
                 "L2 storage migration failed; continuing with brute-force fallback",
+                exc_info=True,
+            )
+        self._migrate_v1_session_embeddings()
+
+    def _migrate_v1_session_embeddings(self) -> None:
+        """Copy legacy v1 `session_embeddings` rows into `session_chunks`.
+
+        INSERT OR IGNORE with a temp unique index on (session_id, chunk_type)
+        guarantees crash-safe re-runs. Falls back silently if the old table is
+        missing or sqlite-vec is unavailable.
+        """
+        try:
+            conn = self._storage._get_conn()
+        except AttributeError:
+            return  # FakeStorage in tests -- skip
+
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='session_embeddings'"
+        ).fetchone()
+        if not exists:
+            return
+
+        logger.info("Migrating v1 session_embeddings to session_chunks...")
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_migration "
+                "ON session_chunks(session_id, chunk_type)"
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO session_chunks
+                   (session_id, chunk_type, chunk_text, payload_json,
+                    embedding, created_at)
+                   SELECT
+                       session_id,
+                       'request',
+                       request,
+                       json_object(
+                           'request', request,
+                           'files', files_json,
+                           'migrated', json('true')
+                       ),
+                       embedding,
+                       created_at
+                   FROM session_embeddings"""
+            )
+            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+            # Sync the vec table so migrated chunks are searchable (idempotent:
+            # only rows absent from vec are inserted). Falls back to brute-force
+            # if sqlite-vec is unavailable.
+            try:
+                conn.execute("""
+                    INSERT INTO session_chunks_vec (rowid, embedding)
+                    SELECT id, embedding FROM session_chunks
+                    WHERE id NOT IN (SELECT rowid FROM session_chunks_vec)
+                """)
+                conn.commit()
+            except Exception:
+                logger.warning(
+                    "Could not sync session_chunks_vec after v1 migration; "
+                    "brute-force fallback will be used"
+                )
+            conn.commit()
+            count = conn.execute("SELECT COUNT(*) FROM session_chunks").fetchone()[0]
+            logger.info("Migration complete: %d chunks in session_chunks", count)
+        except Exception:
+            conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+            conn.rollback()
+            logger.warning(
+                "Migration from session_embeddings failed; "
+                "session memory will start with empty chunks.",
                 exc_info=True,
             )
 

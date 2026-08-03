@@ -308,6 +308,12 @@ class EvalFakeStorage:
             )
         return results
 
+    def query_chunks_vec(self, query_emb, limit, dim):
+        return None  # fallback to brute-force cosine
+
+    def update_chunk_hit_counts(self, chunk_ids):
+        pass  # fake does not persist hit tracking
+
     def delete_old_sessions(self, keep_count):
         sessions = {}
         for i, c in enumerate(self._chunks):
