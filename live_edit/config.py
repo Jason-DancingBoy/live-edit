@@ -116,13 +116,79 @@ class EmbedderConfig:
 
 
 @dataclass
-class SessionMemoryConfig:
+class ShortTermConfig:
+    enabled: bool = True
+    max_full_rounds: int = 3
+    max_stripped_rounds: int = 7
+    max_summary_rounds: int = 20
+    summary_model: str = ""
+
+    def __post_init__(self):
+        if self.max_stripped_rounds < self.max_full_rounds:
+            raise ValueError(
+                f"max_stripped_rounds ({self.max_stripped_rounds}) "
+                f"must be >= max_full_rounds ({self.max_full_rounds})"
+            )
+        if self.max_summary_rounds < self.max_stripped_rounds:
+            raise ValueError(
+                f"max_summary_rounds ({self.max_summary_rounds}) "
+                f"must be >= max_stripped_rounds ({self.max_stripped_rounds})"
+            )
+
+
+@dataclass
+class LongTermConfig:
     enabled: bool = False
     max_entries: int = 10
     similarity_threshold: float = 0.6
     max_stored_entries: int = 5000
+    recency_decay_rate: float = 0.01
+    hit_count_weight: float = 0.05
+    coarse_recall_limit: int = 200
     memory_prompt_template: str = ""
     embedder: EmbedderConfig = field(default_factory=EmbedderConfig)
+
+    def __post_init__(self):
+        if not (0 <= self.similarity_threshold <= 1):
+            raise ValueError(
+                f"similarity_threshold must be in [0, 1], got {self.similarity_threshold}"
+            )
+        if not (0 <= self.recency_decay_rate <= 1):
+            raise ValueError(f"recency_decay_rate must be in [0, 1], got {self.recency_decay_rate}")
+        if not (0 <= self.hit_count_weight <= 1):
+            raise ValueError(f"hit_count_weight must be in [0, 1], got {self.hit_count_weight}")
+        if self.coarse_recall_limit < 1:
+            raise ValueError(f"coarse_recall_limit must be >= 1, got {self.coarse_recall_limit}")
+        if self.max_stored_entries < 1:
+            raise ValueError(f"max_stored_entries must be >= 1, got {self.max_stored_entries}")
+
+
+@dataclass
+class KnowledgeConfig:
+    enabled: bool = False
+    api_enabled: bool = False
+    knowledge_dir: str = ".live-edit/knowledge"
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+    max_entries: int = 20
+
+    def __post_init__(self):
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError(
+                f"chunk_overlap ({self.chunk_overlap}) must be < chunk_size ({self.chunk_size})"
+            )
+
+
+@dataclass
+class MemoryConfig:
+    enabled: bool = False
+    short_term: ShortTermConfig = field(default_factory=ShortTermConfig)
+    long_term: LongTermConfig = field(default_factory=LongTermConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+
+
+# Backward-compatible alias
+SessionMemoryConfig = LongTermConfig  # deprecated — use LongTermConfig directly
 
 
 @dataclass
@@ -158,8 +224,17 @@ class Config:
     errors: ErrorTranslations = field(default_factory=ErrorTranslations)
     preview: PreviewConfig = field(default_factory=PreviewConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
-    session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     toml_tools: list[dict] = field(default_factory=list)
+
+    @property
+    def session_memory(self) -> LongTermConfig:
+        """Backward-compatible accessor for memory.long_term."""
+        return self.memory.long_term
+
+    @session_memory.setter
+    def session_memory(self, value: LongTermConfig) -> None:
+        self.memory.long_term = value
 
 
 # ── TOML parsing ──
@@ -276,21 +351,90 @@ def parse_config(path: str) -> Config:
         preview_pages=eval_data.get("preview_pages", ["/"]),
     )
 
+    # Parse [memory] section (new) with [session_memory] fallback
+    mem_data = raw.get("memory", {})
+
+    # Short-term
+    st_data = mem_data.get("short_term", {})
+    short_term = ShortTermConfig(
+        enabled=st_data.get("enabled", True),
+        max_full_rounds=st_data.get("max_full_rounds", 3),
+        max_stripped_rounds=st_data.get("max_stripped_rounds", 7),
+        max_summary_rounds=st_data.get("max_summary_rounds", 20),
+        summary_model=st_data.get("summary_model", ""),
+    )
+
+    # Long-term: prefer [memory.long_term], fallback to [session_memory]
+    lt_data = mem_data.get("long_term", {})
+    has_memory_section = "long_term" in mem_data
+
+    # [session_memory] as fallback
     sm_data = raw.get("session_memory", {})
     sm_embedder_data = sm_data.get("embedder", {})
-    sm_embedder = EmbedderConfig(
-        type=sm_embedder_data.get("type", "local"),
-        model=sm_embedder_data.get("model", "thenlper/gte-small"),
-        api_url=sm_embedder_data.get("api_url", ""),
-        api_key_env=sm_embedder_data.get("api_key_env", ""),
+
+    # Embedder: [memory.long_term.embedder] > [session_memory.embedder] > default
+    if "embedder" in lt_data:
+        lt_embedder_data = lt_data["embedder"]
+        lt_embedder = EmbedderConfig(
+            type=lt_embedder_data.get("type", "local"),
+            model=lt_embedder_data.get("model", "thenlper/gte-small"),
+            api_url=lt_embedder_data.get("api_url", ""),
+            api_key_env=lt_embedder_data.get("api_key_env", ""),
+        )
+    elif sm_embedder_data:
+        lt_embedder = EmbedderConfig(
+            type=sm_embedder_data.get("type", "local"),
+            model=sm_embedder_data.get("model", "thenlper/gte-small"),
+            api_url=sm_embedder_data.get("api_url", ""),
+            api_key_env=sm_embedder_data.get("api_key_env", ""),
+        )
+    else:
+        lt_embedder = EmbedderConfig()
+
+    long_term = LongTermConfig(
+        enabled=(
+            lt_data.get("enabled", False) if has_memory_section else sm_data.get("enabled", False)
+        ),
+        max_entries=(
+            lt_data.get("max_entries", 10) if has_memory_section else sm_data.get("max_entries", 10)
+        ),
+        similarity_threshold=(
+            lt_data.get("similarity_threshold", 0.6)
+            if has_memory_section
+            else sm_data.get("similarity_threshold", 0.6)
+        ),
+        max_stored_entries=(
+            lt_data.get("max_stored_entries", 5000)
+            if has_memory_section
+            else sm_data.get("max_stored_entries", 5000)
+        ),
+        recency_decay_rate=lt_data.get("recency_decay_rate", 0.01),
+        hit_count_weight=lt_data.get("hit_count_weight", 0.05),
+        coarse_recall_limit=lt_data.get("coarse_recall_limit", 200),
+        memory_prompt_template=(
+            lt_data.get("memory_prompt_template", "")
+            if has_memory_section
+            else sm_data.get("memory_prompt_template", "")
+        ),
+        embedder=lt_embedder,
     )
-    session_memory = SessionMemoryConfig(
-        enabled=sm_data.get("enabled", False),
-        max_entries=sm_data.get("max_entries", 10),
-        similarity_threshold=sm_data.get("similarity_threshold", 0.6),
-        max_stored_entries=sm_data.get("max_stored_entries", 5000),
-        memory_prompt_template=sm_data.get("memory_prompt_template", ""),
-        embedder=sm_embedder,
+
+    # Knowledge
+    kn_data = mem_data.get("knowledge", {})
+    knowledge = KnowledgeConfig(
+        enabled=kn_data.get("enabled", False),
+        api_enabled=kn_data.get("api_enabled", False),
+        knowledge_dir=kn_data.get("knowledge_dir", ".live-edit/knowledge"),
+        chunk_size=kn_data.get("chunk_size", 500),
+        chunk_overlap=kn_data.get("chunk_overlap", 50),
+        max_entries=kn_data.get("max_entries", 20),
+    )
+
+    memory = MemoryConfig(
+        enabled=mem_data.get("enabled", False),
+        short_term=short_term,
+        long_term=long_term,
+        knowledge=knowledge,
     )
 
     toml_tools = raw.get("tools", [])
@@ -307,7 +451,7 @@ def parse_config(path: str) -> Config:
         errors=errors,
         preview=preview,
         evaluation=evaluation,
-        session_memory=session_memory,
+        memory=memory,
         toml_tools=toml_tools,
     )
 
@@ -469,4 +613,5 @@ def generate_default_config(root: str, project_info: dict | None = None) -> Conf
             deep={},
         ),
         preview=PreviewConfig(),
+        memory=MemoryConfig(),  # new; session_memory now delegated via the property
     )
