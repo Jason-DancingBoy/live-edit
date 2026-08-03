@@ -88,6 +88,21 @@ class SessionMemory:
                    FROM session_embeddings"""
             )
             conn.execute("DROP INDEX IF EXISTS idx_chunks_migration")
+            # Sync the vec table so migrated chunks are searchable (idempotent:
+            # only rows absent from vec are inserted). Falls back to brute-force
+            # if sqlite-vec is unavailable.
+            try:
+                conn.execute("""
+                    INSERT INTO session_chunks_vec (rowid, embedding)
+                    SELECT id, embedding FROM session_chunks
+                    WHERE id NOT IN (SELECT rowid FROM session_chunks_vec)
+                """)
+                conn.commit()
+            except Exception:
+                logger.warning(
+                    "Could not sync session_chunks_vec after v1 migration; "
+                    "brute-force fallback will be used"
+                )
             if version < 2:
                 conn.execute("PRAGMA user_version = 1")
             conn.commit()

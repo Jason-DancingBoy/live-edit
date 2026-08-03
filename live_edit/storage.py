@@ -53,6 +53,7 @@ class SQLiteStorage(Storage):
     def __init__(self, db_path: str = "live_edit.db"):
         self.db_path = db_path
         self._local = threading.local()
+        self._vec_loaded = False
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -62,10 +63,11 @@ class SQLiteStorage(Storage):
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             # Load sqlite-vec extension (optional; brute-force fallback if unavailable)
             try:
-                import sqlite_vec  # type: ignore[import-not-found]
+                import sqlite_vec  # type: ignore  # optional dep: absent or untyped
 
                 self._local.conn.enable_load_extension(True)
                 sqlite_vec.load(self._local.conn)
+                self._vec_loaded = True
             except Exception:
                 pass
         return self._local.conn  # type: ignore[no-any-return]
@@ -474,7 +476,7 @@ class SQLiteStorage(Storage):
     def store_knowledge_chunks(self, source_path: str, chunks: list[dict]) -> None:
         """Transactionally replace all chunks for a source_path."""
         conn = self._get_conn()
-        vec_exists = self._vec_table_exists("knowledge_chunks_vec")
+        vec_exists = self._vec_loaded and self._vec_table_exists("knowledge_chunks_vec")
         conn.execute("BEGIN IMMEDIATE")
         try:
             if vec_exists:
@@ -520,7 +522,7 @@ class SQLiteStorage(Storage):
 
     def delete_knowledge_chunks(self, source_path: str) -> None:
         conn = self._get_conn()
-        if self._vec_table_exists("knowledge_chunks_vec"):
+        if self._vec_loaded and self._vec_table_exists("knowledge_chunks_vec"):
             conn.execute(
                 "DELETE FROM knowledge_chunks_vec WHERE rowid IN "
                 "(SELECT id FROM knowledge_chunks WHERE source_path = ?)",
@@ -568,9 +570,14 @@ class SQLiteStorage(Storage):
     ) -> None:
         conn = self._get_conn()
         conn.execute(
-            """INSERT OR REPLACE INTO knowledge_meta
+            """INSERT INTO knowledge_meta
                (source_path, source_type, file_hash, chunk_count, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'))""",
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(source_path) DO UPDATE SET
+                   source_type = excluded.source_type,
+                   file_hash = excluded.file_hash,
+                   chunk_count = excluded.chunk_count,
+                   updated_at = datetime('now')""",
             (source_path, source_type, file_hash, chunk_count),
         )
         conn.commit()
