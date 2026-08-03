@@ -1,11 +1,33 @@
 """Three-tier memory system: ShortTermMemory, LongTermMemory, KnowledgeBase, MemoryManager."""
 
+import asyncio
+import hashlib  # noqa: F401  (used by later tiers in this file)
+import json
 import logging
-from dataclasses import dataclass  # noqa: F401  (used by later tiers in this file)
+import math
+import os  # noqa: F401  (used by later tiers in this file)
+import re
+import struct
+from dataclasses import dataclass
 
-from .config import ShortTermConfig
+from .config import (
+    KnowledgeConfig,  # noqa: F401  (used by later tiers in this file)
+    LongTermConfig,
+    ShortTermConfig,
+)
 
 logger = logging.getLogger("live-edit.memory")
+
+
+@dataclass
+class MemoryEntry:
+    session_id: str
+    request: str
+    file_path: str = ""
+    diff_summary: str = ""
+    stat: str = ""
+    commit_hash: str = ""
+    score: float = 0.0
 
 
 class ShortTermMemory:
@@ -171,3 +193,311 @@ class ShortTermMemory:
             if block and block.get("type") == "text":
                 return "[会话摘要] " + str(block.get("text", "")).strip()
         return ""
+
+
+class LongTermMemory:
+    """L2: Long-term memory over chunked past sessions.
+
+    Stores 1 request chunk + 1 file_diff chunk per modified file, then retrieves
+    similar chunks scored by cosine similarity, recency decay, and hit-count bonus.
+    """
+
+    def __init__(self, storage, embedder, config: LongTermConfig):
+        self._storage = storage
+        self._embedder = embedder
+        self.config = config
+        self._migrate_if_needed()
+        # Rebuild vec tables if the embedder dimension changed since last init.
+        if hasattr(self._storage, "_ensure_vec_dimension"):
+            try:
+                self._storage._ensure_vec_dimension(self._embedder.dimension)
+            except Exception:
+                logger.warning("vec dimension check failed; using brute-force fallback")
+
+    def _migrate_if_needed(self) -> None:
+        """Delegate schema migration to storage (idempotent; storage auto-migrates at init)."""
+        if not hasattr(self._storage, "_migrate_to_memory_v2"):
+            return  # FakeStorage in tests
+        try:
+            self._storage._migrate_to_memory_v2()
+        except Exception:
+            logger.warning(
+                "L2 storage migration failed; continuing with brute-force fallback",
+                exc_info=True,
+            )
+
+    # --- Public API ---
+
+    async def store(
+        self, session_id: str, request: str, files: list[str], diff: str, commit_hash: str
+    ) -> None:
+        """Chunk session by file and store embeddings transactionally.
+
+        Produces 1 request chunk + 1 file_diff chunk per modified file.
+        Old chunks for this session_id are replaced atomically.
+        """
+        if not self.config.enabled:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+
+            # Parse diff into per-file chunks
+            file_chunks = await loop.run_in_executor(None, self._split_diff_by_file, diff)
+
+            # Build all chunk_texts for batch embedding
+            chunk_texts = [request]  # request chunk
+            for fc in file_chunks:
+                chunk_texts.append(f"{request}\nFile: {fc['file_path']}\nChanges: {fc['stat']}")
+
+            # Batch embed (CPU-bound)
+            embeddings = await loop.run_in_executor(None, self._embedder.embed_batch, chunk_texts)
+
+            # Construct chunk dicts with embeddings
+            dim = len(embeddings[0])
+            chunks = []
+
+            # Request chunk
+            chunks.append(
+                {
+                    "chunk_type": "request",
+                    "chunk_text": chunk_texts[0],
+                    "payload_json": json.dumps(
+                        {
+                            "request": request,
+                            "files": files or [],
+                            "commit_hash": commit_hash,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "file_path": "",
+                    "embedding_bytes": struct.pack(f"{dim}f", *embeddings[0]),
+                }
+            )
+
+            # File-diff chunks
+            for i, fc in enumerate(file_chunks):
+                payload = {
+                    "file": fc["file_path"],
+                    "diff": fc["diff_content"][:3000],
+                    "stat": fc["stat"],
+                    "request": request,
+                    "commit_hash": commit_hash,
+                }
+                chunks.append(
+                    {
+                        "chunk_type": "file_diff",
+                        "chunk_text": chunk_texts[i + 1],
+                        "payload_json": json.dumps(payload, ensure_ascii=False),
+                        "file_path": fc["file_path"],
+                        "embedding_bytes": struct.pack(f"{dim}f", *embeddings[i + 1]),
+                    }
+                )
+
+            # Transactional write + eviction in one run_in_executor call
+            max_sessions = self.config.max_stored_entries
+            await loop.run_in_executor(
+                None,
+                lambda: self._storage.store_chunks(session_id, commit_hash, chunks),
+            )
+            # Evict old sessions (fire-and-forget; session-level)
+            await loop.run_in_executor(
+                None,
+                lambda: self._storage.delete_old_sessions(max_sessions),
+            )
+
+        except Exception:
+            logger.warning(
+                "Failed to store chunks for session %s",
+                session_id,
+                exc_info=True,
+            )
+
+    async def retrieve(self, query: str) -> list[MemoryEntry]:
+        """Find similar past chunks, grouped by session (async)."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.retrieve_sync, query)
+
+    def retrieve_sync(self, query: str) -> list[MemoryEntry]:
+        """Synchronous retrieval (used via run_in_executor and for tests)."""
+        if not self.config.enabled:
+            return []
+        try:
+            query_vec = self._embedder.embed(query)
+            # Try sqlite-vec first
+            dim = len(query_vec)
+            query_bytes = struct.pack(f"{dim}f", *query_vec)
+            vec_rows = self._storage.query_chunks_vec(
+                query_bytes, self.config.coarse_recall_limit, dim
+            )
+            if vec_rows is not None:
+                rows = [tuple(r) for r in vec_rows]
+            else:
+                rows = self._storage.query_chunks(limit=15000)
+            return self._score_and_rank(query_vec, rows)
+        except Exception:
+            logger.warning("Failed to retrieve session memories", exc_info=True)
+            return []
+
+    # --- Diff parsing ---
+
+    @staticmethod
+    def _split_diff_by_file(diff: str) -> list[dict]:
+        """Split a unified diff into per-file entries.
+
+        Returns list of {file_path, stat, diff_content}.
+        Skips binary files and empty diffs.
+        """
+        if not diff or not diff.strip():
+            return []
+
+        # Split on 'diff --git ' boundaries
+        parts = re.split(r"^(?=diff --git )", diff, flags=re.MULTILINE)
+        results = []
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Check for binary
+            if re.search(r"^Binary files ", part, re.MULTILINE):
+                continue
+
+            # Extract file path from ---/+++ headers
+            file_match = re.search(r"^\+\+\+ b/(.+)$", part, re.MULTILINE)
+            if not file_match:
+                # Try rename
+                rename_match = re.search(r"^rename (?:from|to) (.+)$", part, re.MULTILINE)
+                if rename_match:
+                    file_path = rename_match.group(1)
+                else:
+                    continue
+            else:
+                file_path = file_match.group(1)
+
+            # Count stat
+            lines_added = len(re.findall(r"^\+(?!\+\+)", part, re.MULTILINE))
+            lines_removed = len(re.findall(r"^-(?!--)", part, re.MULTILINE))
+            stat = f"+{lines_added}/-{lines_removed}"
+
+            results.append(
+                {
+                    "file_path": file_path,
+                    "stat": stat,
+                    "diff_content": part,
+                }
+            )
+
+        return results
+
+    # --- Scoring ---
+
+    def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[MemoryEntry]:
+        """Score chunks with cosine + recency decay + hit bonus, group by session, rank."""
+        dim = len(query_vec)
+        now_dt = None
+        scored = []
+        matched_ids = []
+
+        for row in rows:
+            session_id = row[1]
+            commit_hash = row[2]
+            chunk_type = row[3]
+            file_path = row[6] if len(row) > 6 else ""
+            emb_bytes = row[7] if len(row) > 7 else b""
+            chunk_id = row[0]
+
+            stored_vec = struct.unpack(f"{dim}f", emb_bytes)
+            cosine = self._cosine_similarity(query_vec, stored_vec)
+            if cosine < self.config.similarity_threshold:
+                continue
+
+            # Recency decay
+            last_accessed = None
+            hit_count = 0
+            if len(row) > 9:
+                hit_count = row[8] or 0
+                last_accessed = row[9]
+
+            if self.config.recency_decay_rate > 0 and last_accessed:
+                from datetime import datetime, timezone
+
+                if now_dt is None:
+                    now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+                try:
+                    accessed_dt = datetime.fromisoformat(last_accessed.replace("Z", "+00:00"))
+                    if accessed_dt.tzinfo is not None:
+                        accessed_dt = accessed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    days = (now_dt - accessed_dt).total_seconds() / 86400
+                    decay = math.exp(-self.config.recency_decay_rate * days)
+                except (ValueError, TypeError):
+                    decay = 1.0
+            else:
+                decay = 1.0
+
+            # Hit count bonus (capped at 10)
+            hit_bonus = self.config.hit_count_weight * min(hit_count, 10)
+
+            final_score = cosine * decay + hit_bonus
+
+            try:
+                payload = json.loads(row[5])
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+
+            scored.append(
+                (
+                    session_id,
+                    chunk_type,
+                    file_path,
+                    final_score,
+                    payload.get("request", ""),
+                    payload.get("stat", ""),
+                    commit_hash,
+                    payload.get("diff", ""),
+                )
+            )
+            matched_ids.append(chunk_id)
+
+        # Update hit counts for matched chunks
+        if matched_ids:
+            try:  # noqa: SIM105  (brief-mandated except Exception: pass)
+                self._storage.update_chunk_hit_counts(matched_ids)
+            except Exception:
+                pass
+
+        # Group by session, pick top-2, prefer file_diff (same logic as existing)
+        by_session: dict[str, list] = {}
+        for item in scored:
+            sid = item[0]
+            by_session.setdefault(sid, []).append(item)
+
+        entries = []
+        for _sid, items in by_session.items():
+            items.sort(key=lambda x: x[3] + (0.0 if x[1] == "file_diff" else -0.05), reverse=True)
+            for item in items[:2]:
+                _sid, _ct, fpath, score, req, stat, chash, diff = item
+                diff_lines = [line for line in (diff or "").split("\n") if line.strip()][:4]
+                entries.append(
+                    MemoryEntry(
+                        session_id=_sid,
+                        request=req,
+                        file_path=fpath,
+                        diff_summary="\n".join(diff_lines),
+                        stat=stat,
+                        commit_hash=chash,
+                        score=score,
+                    )
+                )
+
+        entries.sort(key=lambda e: e.score, reverse=True)
+        return entries[: self.config.max_entries]
+
+    @staticmethod
+    def _cosine_similarity(a, b) -> float:
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)  # type: ignore[no-any-return]
