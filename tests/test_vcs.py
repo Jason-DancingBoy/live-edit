@@ -259,3 +259,4 @@ class TestCleanupStaleWorktrees:
             text=True,
         ).stdout.strip()
         assert branches == ""
+        vcs.discard_session_branch("sess-fresh", worktree_path=fresh)
