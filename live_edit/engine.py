@@ -859,7 +859,10 @@ async def run_edit_session(
             # TTL counts from last activity, not last commit.
             _persist_session(session, storage, messages)
             if session._worktree_path:
-                os.utime(session._worktree_path, None)
+                try:
+                    os.utime(session._worktree_path, None)
+                except OSError:
+                    pass  # worktree removed concurrently; not fatal to the round
 
             # Track consecutive write-less rounds; reset when a write tool was used
             if _round_has_write:

@@ -260,3 +260,19 @@ class TestCleanupStaleWorktrees:
         ).stdout.strip()
         assert branches == ""
         vcs.discard_session_branch("sess-fresh", worktree_path=fresh)
+
+    def test_removes_stale_orphan_dir(self, git_repo, tmp_path, monkeypatch):
+        import live_edit.vcs as vcs_mod
+
+        root = tmp_path / "worktrees"
+        root.mkdir()
+        monkeypatch.setattr(vcs_mod, "_WORKTREE_ROOT", str(root))
+        vcs = GitVCS(str(git_repo), worktree_ttl=86400)
+        orphan = root / "orphan-stale"
+        orphan.mkdir()
+        old = time.time() - 2 * 86400
+        os.utime(orphan, (old, old))
+
+        vcs.cleanup_stale_worktrees(ttl_seconds=86400)
+
+        assert not os.path.isdir(orphan)

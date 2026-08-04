@@ -442,10 +442,14 @@ def _recoverable_session_detail():
 
 @pytest.fixture
 def make_recovery_app(tmp_path):
-    def _make(session_detail):
+    def _make(session_detail, max_active=10):
         from live_edit.router import setup_live_edit
 
         config_path = _write_router_config(tmp_path)
+        if max_active != 10:
+            config_text = config_path.read_text()
+            config_text = config_text.replace("max_active = 10", f"max_active = {max_active}")
+            config_path.write_text(config_text)
         mock_provider = FakeProvider()
         mock_vcs = MagicMock()
         mock_vcs.create_worktree.return_value = str(tmp_path / "wt")
@@ -487,3 +491,17 @@ class TestContinueRecovery:
         resp = client.post("/live-edit/continue/s-missing", json={"request": "x"})
 
         assert resp.status_code == 404
+
+    def test_503_when_store_at_capacity(self, make_recovery_app):
+        app = make_recovery_app(_recoverable_session_detail(), max_active=1)
+        client = TestClient(app)
+
+        # Fill the single slot via /stream (adds to store synchronously)
+        with client.stream(
+            "POST", "/live-edit/stream", json={"request": "fill", "mode": "quick"}
+        ):
+            pass
+
+        resp = client.post("/live-edit/continue/s-recover", json={"request": "keep going"})
+
+        assert resp.status_code == 503

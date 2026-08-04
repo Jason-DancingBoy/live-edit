@@ -1,7 +1,6 @@
 """Tests for live_edit.engine — EditSession, agent loop, timeline, error translation."""
 
 import asyncio
-import json
 import os
 import subprocess
 from pathlib import Path
