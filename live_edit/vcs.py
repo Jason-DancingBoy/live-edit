@@ -213,7 +213,11 @@ class GitVCS(VCS):
             # Skip the worktree this process is running from (preview server)
             if os.path.abspath(path) == my_path:
                 continue
-            if now - os.path.getmtime(path) < ttl:
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue  # dir disappeared concurrently — nothing to clean
+            if now - mtime < ttl:
                 continue  # fresh crash — keep for recovery
             if path in registered:
                 try:
