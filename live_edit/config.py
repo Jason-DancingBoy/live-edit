@@ -71,6 +71,7 @@ class TimeoutsConfig:
     final_approval: int = 600
     session_ttl: int = 1800
     max_rounds: int = 15
+    stale_worktree_ttl: int = 86400
 
 
 @dataclass
@@ -258,6 +259,7 @@ def _parse_timeouts(data: dict) -> TimeoutsConfig:
         final_approval=data.get("final_approval", 600),
         session_ttl=data.get("session_ttl", 1800),
         max_rounds=data.get("max_rounds", 15),
+        stale_worktree_ttl=data.get("stale_worktree_ttl", 86400),
     )
 
 

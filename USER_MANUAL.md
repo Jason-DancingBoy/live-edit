@@ -268,6 +268,7 @@ communication_rules = "用中文交流，清晰的代码引用。只能使用只
 | | `approval` | int | quick 模式单步审批超时（秒） |
 | | `final_approval` | int | quick 模式最终 diff 审批超时（秒） |
 | | `session_ttl` | int | 会话过期时间（秒） |
+| | `stale_worktree_ttl` | int | 崩溃后保留未完成 worktree 供恢复的秒数（默认 24h） |
 | `[sessions]` | `max_active` | int | 最大并发会话数 |
 | `[hooks]` | `post_revert` | str | revert 后执行的 shell 命令 |
 | `[ui]` | `default_mode` | str | 默认模式 |

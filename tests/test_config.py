@@ -183,6 +183,51 @@ base = "You are a code analyst."
             "path out of bounds": "Blocked.",
         }
 
+    def test_timeouts_stale_worktree_ttl_default(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text("""
+[project]
+name = "TestApp"
+language = "python"
+
+[llm]
+api_url = "https://api.example.com"
+api_key_env = "KEY"
+model = "m1"
+
+[modes.quick]
+label = "Quick"
+
+[modes.quick.prompt]
+base = "You are helpful."
+""")
+        config = parse_config(str(toml_path))
+        assert config.timeouts.stale_worktree_ttl == 86400
+
+    def test_timeouts_stale_worktree_ttl_custom(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text("""
+[project]
+name = "TestApp"
+language = "python"
+
+[llm]
+api_url = "https://api.example.com"
+api_key_env = "KEY"
+model = "m1"
+
+[timeouts]
+stale_worktree_ttl = 3600
+
+[modes.quick]
+label = "Quick"
+
+[modes.quick.prompt]
+base = "You are helpful."
+""")
+        config = parse_config(str(toml_path))
+        assert config.timeouts.stale_worktree_ttl == 3600
+
 
 class TestValidateConfig:
     def test_valid_config_passes(self, tmp_path):
