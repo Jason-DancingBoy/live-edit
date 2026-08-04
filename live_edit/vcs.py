@@ -4,12 +4,18 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("live-edit.vcs")
 
 _WORKTREE_ROOT = "/tmp/live-edit"
+
+
+def session_worktree_path(session_id: str) -> str:
+    """Deterministic worktree path for a session (create + recovery)."""
+    return os.path.join(_WORKTREE_ROOT, session_id)
 
 
 def _symlink_config(repo_path: str, worktree_path: str, filename: str):
@@ -144,10 +150,11 @@ class VCS(ABC):
 class GitVCS(VCS):
     """Git VCS with worktree support for parallel session isolation."""
 
-    def __init__(self, repo_path):
+    def __init__(self, repo_path, worktree_ttl: int = 86400):
         self.repo_path = str(repo_path)
         self._main_branch: str | None = None
-        self.cleanup_stale_worktrees()
+        self._worktree_ttl = worktree_ttl
+        self.cleanup_stale_worktrees(self._worktree_ttl)
 
     # ── Main-branch detection ──
 
@@ -170,12 +177,19 @@ class GitVCS(VCS):
 
     # ── Worktree lifecycle ──
 
-    def cleanup_stale_worktrees(self):
-        """Remove leftover worktrees from crashed sessions."""
+    def cleanup_stale_worktrees(self, ttl_seconds: int | None = None):
+        """Remove crashed-session leftovers idle longer than ttl_seconds.
+
+        A freshly-crashed worktree (dir mtime inside the TTL) is kept so the
+        session can be recovered via /continue. The engine refreshes the dir
+        mtime every round; see engine.run_edit_session.
+        """
+        ttl = self._worktree_ttl if ttl_seconds is None else ttl_seconds
         if not os.path.isdir(_WORKTREE_ROOT):
             return
         # Resolve repo_path so we can detect when running inside a worktree
         my_path = os.path.abspath(self.repo_path)
+        now = time.time()
         # Get list of registered worktrees
         try:
             result = subprocess.run(
@@ -199,6 +213,8 @@ class GitVCS(VCS):
             # Skip the worktree this process is running from (preview server)
             if os.path.abspath(path) == my_path:
                 continue
+            if now - os.path.getmtime(path) < ttl:
+                continue  # fresh crash — keep for recovery
             if path in registered:
                 try:
                     self.discard_session_branch(name, worktree_path=path)
@@ -214,7 +230,7 @@ class GitVCS(VCS):
                     logger.warning("Failed to remove orphan dir %s: %s", path, e)
 
     def create_worktree(self, session_id: str) -> str:
-        worktree_path = os.path.join(_WORKTREE_ROOT, session_id)
+        worktree_path = session_worktree_path(session_id)
         os.makedirs(_WORKTREE_ROOT, exist_ok=True)
 
         main = self.get_main_branch()

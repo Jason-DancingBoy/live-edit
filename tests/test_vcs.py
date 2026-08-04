@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -237,3 +238,24 @@ class TestListUnmergedBranches:
         assert b_entry["branch"] == "live-edit/sess-b"
         assert len(b_entry["commit_hash"]) > 0
         assert "B" in b_entry["subject"]
+
+
+class TestCleanupStaleWorktrees:
+    def test_keeps_fresh_worktree_removes_stale(self, git_repo):
+        vcs = GitVCS(str(git_repo), worktree_ttl=86400)
+        fresh = vcs.create_worktree("sess-fresh")
+        stale = vcs.create_worktree("sess-stale")
+        # Backdate the stale worktree past the TTL.
+        old = time.time() - 2 * 86400
+        os.utime(stale, (old, old))
+
+        vcs.cleanup_stale_worktrees(ttl_seconds=86400)
+
+        assert os.path.isdir(fresh)
+        assert not os.path.isdir(stale)
+        branches = subprocess.run(
+            ["git", "-C", str(git_repo), "branch", "--list", "live-edit/sess-stale"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branches == ""
