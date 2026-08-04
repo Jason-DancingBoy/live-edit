@@ -594,6 +594,68 @@ class TestRunEditSession:
         result = translate_error("untranslatable error XYZ", "quick")
         assert "AI 会自动重试" in result or "untranslatable" in result
 
+    @pytest.mark.asyncio
+    async def test_incremental_persist_and_worktree_freshness(self):
+        """Mid-run rounds persist the conversation; worktree mtime is refreshed."""
+        import tempfile
+        import time as _time
+
+        from live_edit.tool_registry import DefaultToolRegistry
+
+        tmp = tempfile.mkdtemp()
+        fpath = os.path.join(tmp, "edit_me.py")
+        with open(fpath, "w") as f:
+            f.write("old")
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "edit_file",
+                        "id": "t1",
+                        "input": {
+                            "path": "edit_me.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                    }
+                ],
+            ]
+        )
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tmp
+        mock_storage = MagicMock()
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
+
+        config = _make_test_config()
+        config.project.root = tmp
+
+        # Backdate the worktree so we can prove the loop refreshed it.
+        old = _time.time() - 1000
+        os.utime(tmp, (old, old))
+
+        session = EditSession("s1", "edit file")
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+            tool_registry=registry,
+        )
+
+        calls = mock_storage.save_session.call_args_list
+        assert len(calls) >= 2, "expected a mid-loop persist plus the final persist"
+        assert "edit_me.py" in calls[-1].kwargs["messages_json"]
+        assert os.path.getmtime(tmp) > old
+
 
 # ── helpers ──
 

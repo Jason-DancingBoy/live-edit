@@ -854,6 +854,13 @@ async def run_edit_session(
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
 
+            # Persist each round so a hard crash mid-session doesn't lose the
+            # conversation; refresh the worktree mtime so the stale-worktree
+            # TTL counts from last activity, not last commit.
+            _persist_session(session, storage, messages)
+            if session._worktree_path:
+                os.utime(session._worktree_path, None)
+
             # Track consecutive write-less rounds; reset when a write tool was used
             if _round_has_write:
                 _write_less_rounds = 0
