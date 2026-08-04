@@ -1,6 +1,7 @@
 """Tests for live_edit.engine — EditSession, agent loop, timeline, error translation."""
 
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -993,3 +994,70 @@ async def test_memory_manager_integration():
 
     disabled_session = await run_session(False)
     assert disabled_session._session_memory is None
+
+
+class TestRehydrateSession:
+    def test_restores_fields_and_strips_orphan_tool_use(self):
+        from live_edit.engine import rehydrate_session
+
+        detail = {
+            "request": "polish doc",
+            "mode": "deep",
+            "committed": 0,
+            "commit_hash": "",
+            "files": ["doc.md"],
+            "messages": [
+                {"role": "user", "content": "polish"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "orphan",
+                            "name": "edit_file",
+                            "input": {"path": "doc.md"},
+                        }
+                    ],
+                },
+            ],
+        }
+        session = rehydrate_session("s-rehydrate", detail)
+        assert session is not None
+        assert session.id == "s-rehydrate"
+        assert session.request == "polish doc"
+        assert session._mode == "deep"
+        assert session._modified_files == ["doc.md"]
+        # The unpaired tool_use from a crash window must be stripped.
+        leftovers = [
+            b
+            for m in session.messages
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if b.get("type") == "tool_use"
+        ]
+        assert leftovers == []
+
+    def test_reuses_surviving_worktree(self, tmp_path, monkeypatch):
+        import live_edit.vcs as vcs_mod
+        from live_edit.engine import rehydrate_session
+
+        sid = "s-wt"
+        wt = tmp_path / sid
+        wt.mkdir()
+        monkeypatch.setattr(vcs_mod, "_WORKTREE_ROOT", str(tmp_path))
+        detail = {
+            "request": "r",
+            "mode": "quick",
+            "committed": 0,
+            "commit_hash": "",
+            "files": [],
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        session = rehydrate_session(sid, detail)
+        assert session._worktree_path == str(wt)
+        assert session._merged is False
+
+    def test_returns_none_without_messages(self):
+        from live_edit.engine import rehydrate_session
+
+        assert rehydrate_session("s-empty", {"request": "x", "messages": []}) is None

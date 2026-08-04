@@ -13,7 +13,7 @@ from .memory import MemoryManager
 from .provider import Provider
 from .storage import Storage
 from .tools import _summarize_thinking, _tool_summary
-from .vcs import VCS
+from .vcs import VCS, session_worktree_path
 
 logger = logging.getLogger("live-edit.engine")
 
@@ -1104,6 +1104,31 @@ def _persist_session(session: EditSession, storage: Storage, messages: list[dict
         )
     except Exception as e:
         logger.warning("Failed to persist session %s: %s", session.id, e)
+
+
+def rehydrate_session(session_id: str, detail: dict) -> EditSession | None:
+    """Rebuild an EditSession from a persisted record (crash recovery).
+
+    Returns None when the record has no messages to continue from.
+    """
+    messages = list(detail.get("messages") or [])
+    if not messages:
+        return None
+    _repair_messages(messages)  # strip any unpaired tool_use from a crash window
+    session = EditSession(session_id, detail.get("request", ""))
+    session.messages = messages
+    session._mode = detail.get("mode", "quick")
+    session._modified_files = list(detail.get("files") or [])
+    session._committed = bool(detail.get("committed", 0))
+    session._commit_hash = detail.get("commit_hash", "") or ""
+    worktree = session_worktree_path(session_id)
+    if os.path.isdir(worktree):
+        session._worktree_path = worktree
+        session._merged = False
+    else:
+        session._worktree_path = ""
+        session._merged = False
+    return session
 
 
 async def continue_edit_session(
