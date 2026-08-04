@@ -1036,6 +1036,8 @@ class TestRehydrateSession:
             if b.get("type") == "tool_use"
         ]
         assert leftovers == []
+        assert session._committed is False
+        assert session._commit_hash == ""
 
     def test_reuses_surviving_worktree(self, tmp_path, monkeypatch):
         import live_edit.vcs as vcs_mod
