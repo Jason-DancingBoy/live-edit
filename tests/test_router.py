@@ -1,5 +1,6 @@
 """Tests for live_edit.router — FastAPI endpoints."""
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,15 +23,11 @@ class FakeProvider:
         return [{"type": "text", "text": "All done."}]
 
 
-@pytest.fixture
-def app_with_router(tmp_path):
-    """Create a FastAPI app with live-edit router mounted, using mocks."""
-    from live_edit.router import setup_live_edit
-
-    # Write a minimal config
+def _write_router_config(tmp_path):
+    """Write the shared .live-edit.toml used by router fixtures."""
     config_path = tmp_path / ".live-edit.toml"
-    config_path.write_text("""
-[project]
+    config_path.write_text(
+        """[project]
 name = "TestApp"
 language = "python"
 root = "."
@@ -80,7 +77,17 @@ communication_rules = "Use technical terms."
 [errors.quick]
 "old_string 在文件中未找到" = "文件内容已变化"
 [errors.deep]
-""")
+"""
+    )
+    return config_path
+
+
+@pytest.fixture
+def app_with_router(tmp_path):
+    """Create a FastAPI app with live-edit router mounted, using mocks."""
+    from live_edit.router import setup_live_edit
+
+    config_path = _write_router_config(tmp_path)
 
     mock_provider = FakeProvider()
     mock_vcs = MagicMock()
@@ -104,15 +111,19 @@ communication_rules = "Use technical terms."
     )
     mock_storage = MagicMock()
     mock_storage.get_sessions.return_value = []
-    mock_storage.get_session_detail.return_value = {
-        "session_id": "s1",
-        "request": "Test",
-        "committed": 1,
-        "commit_hash": "abc",
-        "files": '["a.py"]',
-        "mode": "quick",
-        "messages": "[]",
-    }
+    mock_storage.get_session_detail.side_effect = lambda sid: (
+        {
+            "session_id": "s1",
+            "request": "Test",
+            "committed": 1,
+            "commit_hash": "abc",
+            "files": '["a.py"]',
+            "mode": "quick",
+            "messages": "[]",
+        }
+        if sid == "s1"
+        else None
+    )
 
     router = setup_live_edit(
         project_root=str(tmp_path),
@@ -413,3 +424,66 @@ class TestAdminBranchDelete:
     def test_delete_rejects_without_admin_key(self, branch_client):
         resp = branch_client.post("/live-edit/admin/branches/s1/delete")
         assert resp.status_code == 403
+
+
+def _recoverable_session_detail():
+    # mirrors the parsed output of storage.get_session_detail (JSON columns
+    # already decoded into lists)
+    return {
+        "session_id": "s-recover",
+        "request": "polish",
+        "committed": 0,
+        "commit_hash": "",
+        "files": ["doc.md"],
+        "mode": "deep",
+        "messages": [{"role": "user", "content": "polish the doc"}],
+    }
+
+
+@pytest.fixture
+def make_recovery_app(tmp_path):
+    def _make(session_detail):
+        from live_edit.router import setup_live_edit
+
+        config_path = _write_router_config(tmp_path)
+        mock_provider = FakeProvider()
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = str(tmp_path / "wt")
+        os.makedirs(mock_vcs.create_worktree.return_value, exist_ok=True)
+        mock_vcs.log_live_edit_commits.return_value = []
+        mock_storage = MagicMock()
+        mock_storage.get_sessions.return_value = []
+        mock_storage.get_session_detail.return_value = session_detail
+        router = setup_live_edit(
+            project_root=str(tmp_path),
+            config_path=str(config_path),
+            provider=mock_provider,
+            storage=mock_storage,
+            vcs=mock_vcs,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        return app
+
+    return _make
+
+
+class TestContinueRecovery:
+    def test_recovers_session_from_storage(self, make_recovery_app):
+        app = make_recovery_app(_recoverable_session_detail())
+        client = TestClient(app)
+
+        resp = client.post(
+            "/live-edit/continue/s-recover", json={"request": "keep going"}
+        )
+
+        assert resp.status_code == 200
+        assert '"done"' in resp.text
+
+    def test_404_when_storage_has_no_record(self, make_recovery_app):
+        app = make_recovery_app(None)
+        client = TestClient(app)
+
+        resp = client.post("/live-edit/continue/s-missing", json={"request": "x"})
+
+        assert resp.status_code == 404

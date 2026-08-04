@@ -471,6 +471,10 @@ live-edit --help             # 帮助信息
 
 通过 `POST /continue/{session_id}` 可在同一会话继续追加请求，保持上下文。
 
+会话崩溃恢复：每次编辑轮次都会把对话历史持久化到数据库。
+若进程在会话中途崩溃，worktree 会保留 stale_worktree_ttl 秒（默认 24h）。
+重启后 POST /live-edit/continue/{session_id} 会从持久化记录恢复会话并继续未完成的修改。
+
 ---
 
 ## 11. 导出接口总览

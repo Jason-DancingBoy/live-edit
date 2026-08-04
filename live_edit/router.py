@@ -19,6 +19,7 @@ from .engine import (
     SessionStore,
     build_timeline,
     continue_edit_session,
+    rehydrate_session,
     run_edit_session,
 )
 from .preview import PreviewManager
@@ -95,7 +96,7 @@ def setup_live_edit(
         db_path = os.path.join(project_root, "live_edit.db")
         storage = SQLiteStorage(db_path)
     if vcs is None:
-        vcs = GitVCS(project_root)
+        vcs = GitVCS(project_root, worktree_ttl=config.timeouts.stale_worktree_ttl)
 
     # Global session store
     ttl = getattr(config.timeouts, "session_ttl", 1800) if hasattr(config, "timeouts") else 1800
@@ -194,7 +195,13 @@ def setup_live_edit(
         """Continue an existing live-edit session."""
         session = session_store.get(session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail="会话不存在或已过期")
+            # Crash recovery: rebuild the session from its persisted record.
+            detail = storage.get_session_detail(session_id)
+            session = rehydrate_session(session_id, detail) if detail else None
+            if session is None:
+                raise HTTPException(status_code=404, detail="会话不存在或已过期")
+            if not session_store.add(session):
+                raise HTTPException(status_code=503, detail="会话数已达上限，请稍后再试")
 
         session.new_stream_queue()
         mode = req.mode or session._mode
