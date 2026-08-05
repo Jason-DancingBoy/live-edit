@@ -13,7 +13,7 @@ from live_edit.logging import (
 )
 
 
-def _logger(name: str) -> logging.Logger:
+def _logger(name: str) -> tuple[logging.Logger, io.StringIO]:
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())
