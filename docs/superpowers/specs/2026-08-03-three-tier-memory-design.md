@@ -104,13 +104,14 @@ class ShortTermConfig:
         if self.max_summary_rounds < self.max_stripped_rounds:
             raise ValueError("max_summary_rounds must be >= max_stripped_rounds")
 
+
 @dataclass
 class LongTermConfig:
     enabled: bool = False
     max_entries: int = 10
     similarity_threshold: float = 0.6
     max_stored_entries: int = 5000
-    recency_decay_rate: float = 0.01      # exp(-rate × days)
+    recency_decay_rate: float = 0.01  # exp(-rate × days)
     hit_count_weight: float = 0.05
     coarse_recall_limit: int = 200
     memory_prompt_template: str = ""
@@ -128,6 +129,7 @@ class LongTermConfig:
         if self.max_stored_entries < 1:
             raise ValueError("max_stored_entries must be >= 1")
 
+
 @dataclass
 class KnowledgeConfig:
     enabled: bool = False
@@ -141,12 +143,14 @@ class KnowledgeConfig:
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be < chunk_size")
 
+
 @dataclass
 class MemoryConfig:
-    enabled: bool = False       # master switch: false disables all tiers
+    enabled: bool = False  # master switch: false disables all tiers
     short_term: ShortTermConfig = field(default_factory=ShortTermConfig)
     long_term: LongTermConfig = field(default_factory=LongTermConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+
 
 # Backward-compatible alias
 SessionMemoryConfig = LongTermConfig  # deprecated

@@ -388,9 +388,7 @@ async def _run_agent_loop_fix(
                     "live_edit_tool_executions_total",
                     {"tool": tool["name"], "status": _tool_status_val},
                 )
-                metrics.observe(
-                    "live_edit_tool_duration_ms", _tool_dur, {"tool": tool["name"]}
-                )
+                metrics.observe("live_edit_tool_duration_ms", _tool_dur, {"tool": tool["name"]})
             if audit_log is not None:
                 audit_log.record(
                     "tool_execution",
@@ -750,9 +748,7 @@ async def run_edit_session(
             finally:
                 if metrics is not None:
                     metrics.inc("live_edit_llm_calls_total", {"status": _llm_status})
-                    metrics.observe(
-                        "live_edit_llm_duration_seconds", time.monotonic() - _llm_t0
-                    )
+                    metrics.observe("live_edit_llm_duration_seconds", time.monotonic() - _llm_t0)
 
             if content_blocks is None:
                 session.emit("error", error="LLM 调用失败")
@@ -934,9 +930,7 @@ async def run_edit_session(
                         "live_edit_tool_executions_total",
                         {"tool": tool_name, "status": _tool_status_val},
                     )
-                    metrics.observe(
-                        "live_edit_tool_duration_ms", _tool_dur, {"tool": tool_name}
-                    )
+                    metrics.observe("live_edit_tool_duration_ms", _tool_dur, {"tool": tool_name})
                 if audit_log is not None:
                     audit_log.record(
                         "tool_execution",

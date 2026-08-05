@@ -196,10 +196,14 @@ class SQLiteAuditLog(AuditLog):
             clauses.append("ts <= ?")
             params.append(before)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        rows = self._get_conn().execute(
-            f"SELECT * FROM audit_events{where} ORDER BY id DESC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
+        rows = (
+            self._get_conn()
+            .execute(
+                f"SELECT * FROM audit_events{where} ORDER BY id DESC LIMIT ?",
+                (*params, limit),
+            )
+            .fetchall()
+        )
         events = []
         for row in rows:
             d = dict(row)

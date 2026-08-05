@@ -90,14 +90,17 @@ class TestLongTermConfig:
         assert cfg.embedder.type == "local"
         assert cfg.embedder.model == "thenlper/gte-small"
 
-    @pytest.mark.parametrize("field,value", [
-        ("similarity_threshold", -0.1),
-        ("similarity_threshold", 1.1),
-        ("recency_decay_rate", -0.1),
-        ("recency_decay_rate", 1.1),
-        ("hit_count_weight", -0.1),
-        ("hit_count_weight", 1.1),
-    ])
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("similarity_threshold", -0.1),
+            ("similarity_threshold", 1.1),
+            ("recency_decay_rate", -0.1),
+            ("recency_decay_rate", 1.1),
+            ("hit_count_weight", -0.1),
+            ("hit_count_weight", 1.1),
+        ],
+    )
     def test_raises_on_out_of_range_float(self, field, value):
         with pytest.raises(ValueError, match=field):
             LongTermConfig(**{field: value})
@@ -200,21 +203,13 @@ class LongTermConfig:
                 f"similarity_threshold must be in [0, 1], got {self.similarity_threshold}"
             )
         if not (0 <= self.recency_decay_rate <= 1):
-            raise ValueError(
-                f"recency_decay_rate must be in [0, 1], got {self.recency_decay_rate}"
-            )
+            raise ValueError(f"recency_decay_rate must be in [0, 1], got {self.recency_decay_rate}")
         if not (0 <= self.hit_count_weight <= 1):
-            raise ValueError(
-                f"hit_count_weight must be in [0, 1], got {self.hit_count_weight}"
-            )
+            raise ValueError(f"hit_count_weight must be in [0, 1], got {self.hit_count_weight}")
         if self.coarse_recall_limit < 1:
-            raise ValueError(
-                f"coarse_recall_limit must be >= 1, got {self.coarse_recall_limit}"
-            )
+            raise ValueError(f"coarse_recall_limit must be >= 1, got {self.coarse_recall_limit}")
         if self.max_stored_entries < 1:
-            raise ValueError(
-                f"max_stored_entries must be >= 1, got {self.max_stored_entries}"
-            )
+            raise ValueError(f"max_stored_entries must be >= 1, got {self.max_stored_entries}")
 
 
 @dataclass
@@ -229,8 +224,7 @@ class KnowledgeConfig:
     def __post_init__(self):
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError(
-                f"chunk_overlap ({self.chunk_overlap}) "
-                f"must be < chunk_size ({self.chunk_size})"
+                f"chunk_overlap ({self.chunk_overlap}) must be < chunk_size ({self.chunk_size})"
             )
 
 
@@ -261,6 +255,7 @@ Then add a property to `Config` for backward compat (right after the dataclass b
 def session_memory(self) -> LongTermConfig:
     """Backward-compatible accessor for memory.long_term."""
     return self.memory.long_term
+
 
 @session_memory.setter
 def session_memory(self, value: LongTermConfig) -> None:
@@ -316,14 +311,10 @@ else:
 
 long_term = LongTermConfig(
     enabled=(
-        lt_data.get("enabled", False)
-        if has_memory_section
-        else sm_data.get("enabled", False)
+        lt_data.get("enabled", False) if has_memory_section else sm_data.get("enabled", False)
     ),
     max_entries=(
-        lt_data.get("max_entries", 10)
-        if has_memory_section
-        else sm_data.get("max_entries", 10)
+        lt_data.get("max_entries", 10) if has_memory_section else sm_data.get("max_entries", 10)
     ),
     similarity_threshold=(
         lt_data.get("similarity_threshold", 0.6)
@@ -424,9 +415,11 @@ Note: `tests/test_storage.py` already has `import pytest` at the top (confirmed)
 ```python
 # Add to tests/test_storage.py
 
+
 class TestMigrationV2:
     def test_adds_hit_columns_to_session_chunks(self, tmp_path):
         from live_edit.storage import SQLiteStorage
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
         conn = store._get_conn()
@@ -438,6 +431,7 @@ class TestMigrationV2:
 
     def test_migration_idempotent(self, tmp_path):
         from live_edit.storage import SQLiteStorage
+
         db = tmp_path / "test.db"
         store1 = SQLiteStorage(str(db))
         conn1 = store1._get_conn()
@@ -454,12 +448,14 @@ class TestMigrationV2:
         # Requires sqlite-vec (installed via the dev/rag extras); skip otherwise.
         pytest.importorskip("sqlite_vec")
         from live_edit.storage import SQLiteStorage
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
 
         # Insert a chunk manually
         conn = store._get_conn()
         import struct
+
         emb = struct.pack("384f", *[0.1] * 384)
         conn.execute(
             """INSERT INTO session_chunks
@@ -481,6 +477,7 @@ class TestKnowledgeCRUD:
     def test_store_and_query_knowledge_chunks(self, tmp_path):
         from live_edit.storage import SQLiteStorage
         import struct
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
         emb = struct.pack("384f", *[0.1] * 384)
@@ -504,14 +501,23 @@ class TestKnowledgeCRUD:
     def test_delete_knowledge_chunks(self, tmp_path):
         from live_edit.storage import SQLiteStorage
         import struct
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
         emb = struct.pack("384f", *[0.1] * 384)
 
-        store.store_knowledge_chunks("api:test", [
-            {"source_path": "api:test", "chunk_index": 0,
-             "chunk_text": "x", "embedding_bytes": emb, "metadata_json": "{}"}
-        ])
+        store.store_knowledge_chunks(
+            "api:test",
+            [
+                {
+                    "source_path": "api:test",
+                    "chunk_index": 0,
+                    "chunk_text": "x",
+                    "embedding_bytes": emb,
+                    "metadata_json": "{}",
+                }
+            ],
+        )
         store.upsert_knowledge_meta("api:test", "api", None, 1)
         store.delete_knowledge_chunks("api:test")
         store.delete_knowledge_meta("api:test")
@@ -521,6 +527,7 @@ class TestKnowledgeCRUD:
 
     def test_list_knowledge_meta(self, tmp_path):
         from live_edit.storage import SQLiteStorage
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
 
@@ -535,6 +542,7 @@ class TestKnowledgeCRUD:
     def test_update_chunk_hit_counts(self, tmp_path):
         from live_edit.storage import SQLiteStorage
         import struct
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
         emb = struct.pack("384f", *[0.1] * 384)
@@ -615,6 +623,7 @@ logger = logging.getLogger("live-edit.storage")
 # Load sqlite-vec extension (optional; brute-force fallback if unavailable)
 try:
     import sqlite_vec
+
     self._local.conn.enable_load_extension(True)
     sqlite_vec.load(self._local.conn)
 except Exception:
@@ -656,9 +665,7 @@ def _migrate_to_memory_v2(self, embedder_dim: int = 384) -> None:
 
     # Backfill existing embeddings
     try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM session_chunks_vec"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM session_chunks_vec").fetchone()[0]
         if count == 0:
             conn.execute("""
                 INSERT INTO session_chunks_vec (rowid, embedding)
@@ -733,7 +740,8 @@ def _ensure_vec_dimension(self, embedder_dim: int) -> None:
         except Exception:
             logger.warning(
                 "Could not ensure %s dimension %s; using brute-force fallback",
-                vec_table, embedder_dim,
+                vec_table,
+                embedder_dim,
             )
 ```
 
@@ -771,11 +779,16 @@ def query_chunks(self, limit: int = 15000) -> list[tuple]:
 ```python
 def _vec_table_exists(self, name: str) -> bool:
     """Return True if the given virtual table exists in sqlite_master."""
-    row = self._get_conn().execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,),
-    ).fetchone()
+    row = (
+        self._get_conn()
+        .execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        )
+        .fetchone()
+    )
     return row is not None
+
 
 def store_knowledge_chunks(self, source_path: str, chunks: list[dict]) -> None:
     """Transactionally replace all chunks for a source_path."""
@@ -811,15 +824,19 @@ def store_knowledge_chunks(self, source_path: str, chunks: list[dict]) -> None:
                 ),
             )
         if vec_exists:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO knowledge_chunks_vec (rowid, embedding)
                 SELECT id, embedding FROM knowledge_chunks
                 WHERE source_path = ?
-            """, (source_path,))
+            """,
+                (source_path,),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+
 
 def delete_knowledge_chunks(self, source_path: str) -> None:
     conn = self._get_conn()
@@ -835,6 +852,7 @@ def delete_knowledge_chunks(self, source_path: str) -> None:
     )
     conn.commit()
 
+
 def query_knowledge_chunks(self, limit: int = 15000) -> list[tuple]:
     conn = self._get_conn()
     rows = conn.execute(
@@ -846,9 +864,8 @@ def query_knowledge_chunks(self, limit: int = 15000) -> list[tuple]:
     ).fetchall()
     return [tuple(r) for r in rows]
 
-def query_knowledge_chunks_vec(
-    self, query_embedding_bytes: bytes, limit: int
-) -> list[tuple]:
+
+def query_knowledge_chunks_vec(self, query_embedding_bytes: bytes, limit: int) -> list[tuple]:
     """sqlite-vec coarse search on knowledge chunks."""
     conn = self._get_conn()
     rows = conn.execute(
@@ -864,8 +881,12 @@ def query_knowledge_chunks_vec(
     ).fetchall()
     return [tuple(r) for r in rows]
 
+
 def upsert_knowledge_meta(
-    self, source_path: str, source_type: str, file_hash: str | None,
+    self,
+    source_path: str,
+    source_type: str,
+    file_hash: str | None,
     chunk_count: int,
 ) -> None:
     conn = self._get_conn()
@@ -877,17 +898,18 @@ def upsert_knowledge_meta(
     )
     conn.commit()
 
+
 def delete_knowledge_meta(self, source_path: str) -> None:
     conn = self._get_conn()
     conn.execute("DELETE FROM knowledge_meta WHERE source_path = ?", (source_path,))
     conn.commit()
 
+
 def list_knowledge_meta(self) -> list[dict]:
     conn = self._get_conn()
-    rows = conn.execute(
-        "SELECT * FROM knowledge_meta ORDER BY source_path"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM knowledge_meta ORDER BY source_path").fetchall()
     return [dict(r) for r in rows]
+
 
 def update_chunk_hit_counts(self, chunk_ids: list[int]) -> None:
     conn = self._get_conn()
@@ -899,6 +921,7 @@ def update_chunk_hit_counts(self, chunk_ids: list[int]) -> None:
         [(cid,) for cid in chunk_ids],
     )
     conn.commit()
+
 
 def query_chunks_vec(
     self, query_embedding_bytes: bytes, limit: int, dimension: int
@@ -931,11 +954,14 @@ In `store_chunks`, inside the transaction after all `INSERT` statements complete
 ```python
 # Sync vec table (best-effort; skip if sqlite-vec unavailable)
 try:
-    conn.execute("""
+    conn.execute(
+        """
         INSERT INTO session_chunks_vec (rowid, embedding)
         SELECT id, embedding FROM session_chunks
         WHERE session_id = ?
-    """, (session_id,))
+    """,
+        (session_id,),
+    )
 except Exception:
     pass
 ```
@@ -1009,21 +1035,32 @@ def make_messages(rounds: int) -> list[dict]:
     """Build a realistic message sequence for N rounds."""
     msgs = []
     for i in range(rounds):
-        msgs.append({
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": f"Thinking about round {i}"},
-                {"type": "tool_use", "id": f"t{i}", "name": "edit_file",
-                 "input": {"path": f"file{i}.py", "old_string": "foo", "new_string": "bar"}},
-            ]
-        })
-        msgs.append({
-            "role": "user",
-            "content": [
-                {"type": "tool_result", "tool_use_id": f"t{i}",
-                 "content": [{"type": "text", "text": '{"ok": true, "file": "file0.py"}'}]},
-            ]
-        })
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": f"Thinking about round {i}"},
+                    {
+                        "type": "tool_use",
+                        "id": f"t{i}",
+                        "name": "edit_file",
+                        "input": {"path": f"file{i}.py", "old_string": "foo", "new_string": "bar"},
+                    },
+                ],
+            }
+        )
+        msgs.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": f"t{i}",
+                        "content": [{"type": "text", "text": '{"ok": true, "file": "file0.py"}'}],
+                    },
+                ],
+            }
+        )
     return msgs
 
 
@@ -1055,13 +1092,14 @@ class TestShortTermMemory:
         # max_full_rounds=2: last 2 rounds stay full; older rounds stripped.
         # Messages are ordered assistant, user, assistant, user, ...
         assert summary == ""
-        assert result[0] is msgs[0]          # oldest assistant message preserved as-is
-        first_user = result[1]               # oldest user message -> tool results stripped
+        assert result[0] is msgs[0]  # oldest assistant message preserved as-is
+        first_user = result[1]  # oldest user message -> tool results stripped
         assert isinstance(first_user["content"], str)
         assert "edit_file" in first_user["content"]
 
     def test_summarizes_old_rounds_via_async(self):
         import asyncio
+
         cfg = ShortTermConfig(max_full_rounds=1, max_stripped_rounds=2, max_summary_rounds=6)
         sm = ShortTermMemory(cfg)
         msgs = make_messages(6)
@@ -1117,9 +1155,7 @@ class ShortTermMemory:
     def __init__(self, config: ShortTermConfig):
         self.config = config
 
-    def manage(
-        self, messages: list[dict], round_num: int
-    ) -> tuple[list[dict], str]:
+    def manage(self, messages: list[dict], round_num: int) -> tuple[list[dict], str]:
         """Manage the message window (sync). Returns (mutated_messages, summary_text).
 
         The sync version never summarizes (it has no provider): once
@@ -1165,9 +1201,7 @@ class ShortTermMemory:
 
         return self._strip_old_rounds(messages, cfg.max_full_rounds), ""
 
-    def _strip_old_rounds(
-        self, messages: list[dict], keep_full: int
-    ) -> list[dict]:
+    def _strip_old_rounds(self, messages: list[dict], keep_full: int) -> list[dict]:
         """Keep last `keep_full` rounds full; strip older rounds to one-liners."""
         # Each round = assistant + user pair
         total_rounds = len(messages) // 2
@@ -1213,6 +1247,7 @@ class ShortTermMemory:
                                 break
                         # Count +/- from result text
                         import re
+
                         added = len(re.findall(r"^\+", text, re.MULTILINE))
                         removed = len(re.findall(r"^-", text, re.MULTILINE))
                         stat = f"+{added}/-{removed}" if (added or removed) else ""
@@ -1225,9 +1260,7 @@ class ShortTermMemory:
         result.extend(messages[-keep_msgs:])
         return result
 
-    async def _summarize(
-        self, messages: list[dict], keep_full: int, provider
-    ) -> str:
+    async def _summarize(self, messages: list[dict], keep_full: int, provider) -> str:
         """Call LLM to summarize old rounds beyond keep_full."""
         keep_msgs = keep_full * 2
         old_messages = messages[:-keep_msgs] if keep_msgs > 0 else messages
@@ -1315,6 +1348,7 @@ from live_edit.memory import LongTermMemory, MemoryEntry
 
 class FakeEmbedder:
     """Returns simple deterministic embeddings for testing."""
+
     def __init__(self, dim=384):
         self._dim = dim
 
@@ -1333,6 +1367,7 @@ class FakeEmbedder:
 
 class FakeStorage:
     """In-memory storage that mimics the SQLiteStorage interface needed by L2."""
+
     def __init__(self):
         self.chunks = []
         self._next_id = 1
@@ -1341,11 +1376,21 @@ class FakeStorage:
         return self
 
     def query_chunks(self, limit: int = 15000) -> list[tuple]:
-        return [(c["id"], c["session_id"], c["commit_hash"], c["chunk_type"],
-                 c["chunk_text"], c["payload_json"], c.get("file_path", ""),
-                 c["embedding_bytes"], c.get("hit_count", 0),
-                 c.get("last_accessed", None))
-                for c in self.chunks[-limit:]]
+        return [
+            (
+                c["id"],
+                c["session_id"],
+                c["commit_hash"],
+                c["chunk_type"],
+                c["chunk_text"],
+                c["payload_json"],
+                c.get("file_path", ""),
+                c["embedding_bytes"],
+                c.get("hit_count", 0),
+                c.get("last_accessed", None),
+            )
+            for c in self.chunks[-limit:]
+        ]
 
     def query_chunks_vec(self, query_emb: bytes, limit: int, dim: int):
         return None  # fallback to brute-force
@@ -1360,24 +1405,26 @@ class FakeStorage:
         # Remove old chunks for this session
         self.chunks = [c for c in self.chunks if c["session_id"] != session_id]
         for ch in chunks:
-            self.chunks.append({
-                "id": self._next_id,
-                "session_id": session_id,
-                "commit_hash": commit_hash,
-                "chunk_type": ch["chunk_type"],
-                "chunk_text": ch["chunk_text"],
-                "payload_json": ch["payload_json"],
-                "file_path": ch.get("file_path", ""),
-                "embedding_bytes": ch["embedding_bytes"],
-                "hit_count": 0,
-                "last_accessed": None,
-            })
+            self.chunks.append(
+                {
+                    "id": self._next_id,
+                    "session_id": session_id,
+                    "commit_hash": commit_hash,
+                    "chunk_type": ch["chunk_type"],
+                    "chunk_text": ch["chunk_text"],
+                    "payload_json": ch["payload_json"],
+                    "file_path": ch.get("file_path", ""),
+                    "embedding_bytes": ch["embedding_bytes"],
+                    "hit_count": 0,
+                    "last_accessed": None,
+                }
+            )
             self._next_id += 1
 
     def delete_old_sessions(self, keep_count: int) -> None:
-        sessions = list(dict.fromkeys(
-            c["session_id"] for c in sorted(self.chunks, key=lambda c: c["id"])
-        ))
+        sessions = list(
+            dict.fromkeys(c["session_id"] for c in sorted(self.chunks, key=lambda c: c["id"]))
+        )
         if len(sessions) > keep_count:
             to_delete = set(sessions[:-keep_count])
             self.chunks = [c for c in self.chunks if c["session_id"] not in to_delete]
@@ -1389,8 +1436,8 @@ class TestLongTermMemory:
             enabled=True,
             max_entries=5,
             similarity_threshold=0.0,  # accept everything for test
-            recency_decay_rate=0.0,    # no decay
-            hit_count_weight=0.0,      # no hit bonus
+            recency_decay_rate=0.0,  # no decay
+            hit_count_weight=0.0,  # no hit bonus
         )
         storage = FakeStorage()
         embedder = FakeEmbedder(dim=384)
@@ -1398,16 +1445,32 @@ class TestLongTermMemory:
 
         # Store some chunks
         emb = struct.pack("384f", *[0.5] * 384)
-        storage.store_chunks("s1", "abc", [
-            {"chunk_type": "request", "chunk_text": "fix login bug",
-             "payload_json": json.dumps({"request": "fix login bug"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
-        storage.store_chunks("s2", "def", [
-            {"chunk_type": "request", "chunk_text": "add navbar",
-             "payload_json": json.dumps({"request": "add navbar"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
+        storage.store_chunks(
+            "s1",
+            "abc",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "fix login bug",
+                    "payload_json": json.dumps({"request": "fix login bug"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
+        storage.store_chunks(
+            "s2",
+            "def",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "add navbar",
+                    "payload_json": json.dumps({"request": "add navbar"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
 
         results = ltm.retrieve_sync("fix auth bug")
         assert len(results) > 0
@@ -1419,11 +1482,16 @@ class TestLongTermMemory:
         ltm = LongTermMemory(storage, embedder, cfg)
 
         import asyncio
-        asyncio.run(ltm.store(
-            "s1", "update README", ["README.md"],
-            "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
-            "abc123",
-        ))
+
+        asyncio.run(
+            ltm.store(
+                "s1",
+                "update README",
+                ["README.md"],
+                "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+                "abc123",
+            )
+        )
 
         assert len(storage.chunks) > 0
         assert any(c["chunk_type"] == "request" for c in storage.chunks)
@@ -1433,7 +1501,7 @@ class TestLongTermMemory:
         cfg = LongTermConfig(
             enabled=True,
             similarity_threshold=0.0,
-            recency_decay_rate=1.0,   # strong decay
+            recency_decay_rate=1.0,  # strong decay
             hit_count_weight=0.0,
             max_entries=5,
         )
@@ -1442,11 +1510,19 @@ class TestLongTermMemory:
         ltm = LongTermMemory(storage, embedder, cfg)
 
         emb = struct.pack("384f", *[0.9] * 384)
-        storage.store_chunks("old_session", "oldhash", [
-            {"chunk_type": "request", "chunk_text": "old edit",
-             "payload_json": json.dumps({"request": "old edit"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
+        storage.store_chunks(
+            "old_session",
+            "oldhash",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "old edit",
+                    "payload_json": json.dumps({"request": "old edit"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
         # Set last_accessed to 100 days ago
         storage.chunks[0]["last_accessed"] = "2026-04-25T00:00:00"
 
@@ -1468,11 +1544,19 @@ class TestLongTermMemory:
         ltm = LongTermMemory(storage, embedder, cfg)
 
         emb = struct.pack("384f", *[0.5] * 384)
-        storage.store_chunks("s1", "abc", [
-            {"chunk_type": "request", "chunk_text": "popular edit",
-             "payload_json": json.dumps({"request": "popular edit"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
+        storage.store_chunks(
+            "s1",
+            "abc",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "popular edit",
+                    "payload_json": json.dumps({"request": "popular edit"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
         storage.chunks[0]["hit_count"] = 10  # max bonus
 
         results = ltm.retrieve_sync("popular edit")
@@ -1493,11 +1577,19 @@ class TestLongTermMemory:
         ltm = LongTermMemory(storage, embedder, cfg)
 
         emb = struct.pack("384f", *[0.5] * 384)
-        storage.store_chunks("s1", "abc", [
-            {"chunk_type": "request", "chunk_text": "viral edit",
-             "payload_json": json.dumps({"request": "viral edit"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
+        storage.store_chunks(
+            "s1",
+            "abc",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "viral edit",
+                    "payload_json": json.dumps({"request": "viral edit"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
         storage.chunks[0]["hit_count"] = 50  # way over cap
 
         results = ltm.retrieve_sync("viral edit")
@@ -1585,12 +1677,11 @@ def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[Mem
 
         if self.config.recency_decay_rate > 0 and last_accessed:
             from datetime import datetime, timezone
+
             if now_dt is None:
                 now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
             try:
-                accessed_dt = datetime.fromisoformat(
-                    last_accessed.replace("Z", "+00:00")
-                )
+                accessed_dt = datetime.fromisoformat(last_accessed.replace("Z", "+00:00"))
                 if accessed_dt.tzinfo is not None:
                     accessed_dt = accessed_dt.astimezone(timezone.utc).replace(tzinfo=None)
                 days = (now_dt - accessed_dt).total_seconds() / 86400
@@ -1610,11 +1701,18 @@ def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[Mem
         except (json.JSONDecodeError, TypeError):
             payload = {}
 
-        scored.append((
-            session_id, chunk_type, file_path, final_score,
-            payload.get("request", ""), payload.get("stat", ""),
-            commit_hash, payload.get("diff", ""),
-        ))
+        scored.append(
+            (
+                session_id,
+                chunk_type,
+                file_path,
+                final_score,
+                payload.get("request", ""),
+                payload.get("stat", ""),
+                commit_hash,
+                payload.get("diff", ""),
+            )
+        )
         matched_ids.append(chunk_id)
 
     # Update hit counts for matched chunks
@@ -1636,14 +1734,20 @@ def _score_and_rank(self, query_vec: list[float], rows: list[tuple]) -> list[Mem
         for item in items[:2]:
             _sid, _ct, fpath, score, req, stat, chash, diff = item
             diff_lines = [line for line in (diff or "").split("\n") if line.strip()][:4]
-            entries.append(MemoryEntry(
-                session_id=_sid, request=req, file_path=fpath,
-                diff_summary="\n".join(diff_lines), stat=stat,
-                commit_hash=chash, score=score,
-            ))
+            entries.append(
+                MemoryEntry(
+                    session_id=_sid,
+                    request=req,
+                    file_path=fpath,
+                    diff_summary="\n".join(diff_lines),
+                    stat=stat,
+                    commit_hash=chash,
+                    score=score,
+                )
+            )
 
     entries.sort(key=lambda e: e.score, reverse=True)
-    return entries[:self.config.max_entries]
+    return entries[: self.config.max_entries]
 ```
 
 Add `retrieve_sync` method:
@@ -1658,9 +1762,7 @@ def retrieve_sync(self, query: str) -> list[MemoryEntry]:
         # Try sqlite-vec first
         dim = len(query_vec)
         query_bytes = struct.pack(f"{dim}f", *query_vec)
-        vec_rows = self._storage.query_chunks_vec(
-            query_bytes, self.config.coarse_recall_limit, dim
-        )
+        vec_rows = self._storage.query_chunks_vec(query_bytes, self.config.coarse_recall_limit, dim)
         if vec_rows is not None:
             rows = [tuple(r) for r in vec_rows]
         else:
@@ -1676,6 +1778,7 @@ Async `retrieve` delegates to `retrieve_sync`:
 ```python
 async def retrieve(self, query: str) -> list[MemoryEntry]:
     import asyncio
+
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, self.retrieve_sync, query)
 ```
@@ -1742,6 +1845,7 @@ class TestKnowledgeBase:
     @pytest.fixture
     def kb(self, tmp_path):
         from live_edit.storage import SQLiteStorage
+
         db = tmp_path / "test.db"
         store = SQLiteStorage(str(db))
         embedder = FakeEmbedder(dim=384)
@@ -1881,7 +1985,8 @@ class KnowledgeBase:
 
         # Collect existing meta
         existing_meta = {
-            m["source_path"]: m for m in self._storage.list_knowledge_meta()
+            m["source_path"]: m
+            for m in self._storage.list_knowledge_meta()
             if m["source_type"] == "file"
         }
 
@@ -1914,18 +2019,18 @@ class KnowledgeBase:
 
         chunk_dicts = []
         for i, (text, vec) in enumerate(zip(chunks_text, embeddings)):
-            chunk_dicts.append({
-                "source_path": source_path,
-                "chunk_index": i,
-                "chunk_text": text,
-                "embedding_bytes": struct.pack(f"{dim}f", *vec),
-                "metadata_json": json.dumps({}, ensure_ascii=False),
-            })
+            chunk_dicts.append(
+                {
+                    "source_path": source_path,
+                    "chunk_index": i,
+                    "chunk_text": text,
+                    "embedding_bytes": struct.pack(f"{dim}f", *vec),
+                    "metadata_json": json.dumps({}, ensure_ascii=False),
+                }
+            )
 
         self._storage.store_knowledge_chunks(source_path, chunk_dicts)
-        self._storage.upsert_knowledge_meta(
-            source_path, source_type, file_hash, len(chunk_dicts)
-        )
+        self._storage.upsert_knowledge_meta(source_path, source_type, file_hash, len(chunk_dicts))
 
     @staticmethod
     def _split_text(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -1942,7 +2047,7 @@ class KnowledgeBase:
                 # If a single paragraph is too long, split by sentences or fixed size
                 if len(para) > chunk_size:
                     for i in range(0, len(para), chunk_size - overlap):
-                        chunks.append(para[i:i + chunk_size])
+                        chunks.append(para[i : i + chunk_size])
                 else:
                     current = para
         if current:
@@ -1979,14 +2084,16 @@ class KnowledgeBase:
                 emb_bytes = row[5]
                 stored_vec = struct.unpack(f"{dim}f", emb_bytes)
                 score = self._cosine_similarity(query_vec, stored_vec)
-                entries.append(KnowledgeEntry(
-                    source_path=source_path,
-                    chunk_text=chunk_text,
-                    score=score,
-                ))
+                entries.append(
+                    KnowledgeEntry(
+                        source_path=source_path,
+                        chunk_text=chunk_text,
+                        score=score,
+                    )
+                )
 
             entries.sort(key=lambda e: e.score, reverse=True)
-            return entries[:self.config.max_entries]
+            return entries[: self.config.max_entries]
         except Exception:
             logger.warning("Knowledge base search failed", exc_info=True)
             return []
@@ -1994,6 +2101,7 @@ class KnowledgeBase:
     @staticmethod
     def _cosine_similarity(a, b) -> float:
         import math
+
         dot = sum(x * y for x, y in zip(a, b, strict=True))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(y * y for y in b))
@@ -2003,14 +2111,14 @@ class KnowledgeBase:
 
     # --- API Document Management ---
 
-    def add_api_document(
-        self, source_path: str, content: str, metadata: dict
-    ) -> None:
+    def add_api_document(self, source_path: str, content: str, metadata: dict) -> None:
         """Add or update an API-uploaded document."""
         if not source_path.startswith("api:"):
             raise ValueError("API document source_path must start with 'api:'")
         self._index_document(
-            source_path, content, "api",
+            source_path,
+            content,
+            "api",
             file_hash=hashlib.sha256(content.encode()).hexdigest(),
         )
 
@@ -2078,10 +2186,13 @@ from live_edit.memory import MemoryManager, MemoryEntry, KnowledgeEntry
 class FakeEmbedder:
     def __init__(self, dim=384):
         self._dim = dim
+
     def embed(self, text):
         return [0.5] * self._dim
+
     def embed_batch(self, texts):
         return [[0.5] * self._dim for _ in texts]
+
     @property
     def dimension(self):
         return self._dim
@@ -2098,11 +2209,21 @@ class FakeStorage:
         return self
 
     def query_chunks(self, limit=15000):
-        return [(c["id"], c["session_id"], c["commit_hash"], c["chunk_type"],
-                 c["chunk_text"], c["payload_json"], c.get("file_path", ""),
-                 c["embedding_bytes"], c.get("hit_count", 0),
-                 c.get("last_accessed", None))
-                for c in self.chunks[-limit:]]
+        return [
+            (
+                c["id"],
+                c["session_id"],
+                c["commit_hash"],
+                c["chunk_type"],
+                c["chunk_text"],
+                c["payload_json"],
+                c.get("file_path", ""),
+                c["embedding_bytes"],
+                c.get("hit_count", 0),
+                c.get("last_accessed", None),
+            )
+            for c in self.chunks[-limit:]
+        ]
 
     def query_chunks_vec(self, query_emb, limit, dim):
         return None
@@ -2116,19 +2237,35 @@ class FakeStorage:
     def store_chunks(self, session_id, commit_hash, chunks):
         self.chunks = [c for c in self.chunks if c["session_id"] != session_id]
         for ch in chunks:
-            self.chunks.append({"id": self._next_id, "session_id": session_id,
-                                "commit_hash": commit_hash, **ch,
-                                "hit_count": 0, "last_accessed": None})
+            self.chunks.append(
+                {
+                    "id": self._next_id,
+                    "session_id": session_id,
+                    "commit_hash": commit_hash,
+                    **ch,
+                    "hit_count": 0,
+                    "last_accessed": None,
+                }
+            )
             self._next_id += 1
 
     def delete_old_sessions(self, keep_count):
         pass
 
     def query_knowledge_chunks(self, limit=15000):
-        return [(c["id"], c["source_path"], c["chunk_index"], c["chunk_text"],
-                 c["metadata_json"], c["embedding_bytes"],
-                 c.get("hit_count", 0), c.get("last_accessed", None))
-                for c in self.knowledge_chunks]
+        return [
+            (
+                c["id"],
+                c["source_path"],
+                c["chunk_index"],
+                c["chunk_text"],
+                c["metadata_json"],
+                c["embedding_bytes"],
+                c.get("hit_count", 0),
+                c.get("last_accessed", None),
+            )
+            for c in self.knowledge_chunks
+        ]
 
     def query_knowledge_chunks_vec(self, query_emb, limit):
         return self.query_knowledge_chunks(limit)
@@ -2142,9 +2279,16 @@ class TestMemoryManager:
     def mgr(self):
         cfg = MemoryConfig(
             enabled=True,
-            short_term=ShortTermConfig(max_full_rounds=3, max_stripped_rounds=7, max_summary_rounds=20),
-            long_term=LongTermConfig(enabled=True, similarity_threshold=0.0,
-                                     recency_decay_rate=0.0, hit_count_weight=0.0, max_entries=5),
+            short_term=ShortTermConfig(
+                max_full_rounds=3, max_stripped_rounds=7, max_summary_rounds=20
+            ),
+            long_term=LongTermConfig(
+                enabled=True,
+                similarity_threshold=0.0,
+                recency_decay_rate=0.0,
+                hit_count_weight=0.0,
+                max_entries=5,
+            ),
             knowledge=KnowledgeConfig(enabled=False),
         )
         storage = FakeStorage()
@@ -2158,19 +2302,26 @@ class TestMemoryManager:
 
     def test_retrieve_l2_includes_past_changes(self, mgr):
         emb = struct.pack("384f", *[0.5] * 384)
-        mgr._storage.store_chunks("past_sess", "hash1", [
-            {"chunk_type": "request", "chunk_text": "fix login bug",
-             "payload_json": json.dumps({"request": "fix login bug"}),
-             "file_path": "", "embedding_bytes": emb},
-        ])
+        mgr._storage.store_chunks(
+            "past_sess",
+            "hash1",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "fix login bug",
+                    "payload_json": json.dumps({"request": "fix login bug"}),
+                    "file_path": "",
+                    "embedding_bytes": emb,
+                },
+            ],
+        )
 
         msgs = [{"role": "user", "content": "fix auth"}]
         context, _ = mgr.retrieve_sync("fix auth", "s1", msgs, round_num=1)
         assert "Relevant Past Changes" in context or len(context) > 0
 
     def test_store_delegates_to_l2(self, mgr):
-        mgr.store_sync("s1", "update readme", ["README.md"],
-                       "diff --git a/README.md ...", "abc123")
+        mgr.store_sync("s1", "update readme", ["README.md"], "diff --git a/README.md ...", "abc123")
         assert len(mgr._storage.chunks) > 0
 
     def test_disabled_master_switch_skips_all(self):
@@ -2207,9 +2358,7 @@ class MemoryManager:
             else None
         )
 
-    def manage_messages(
-        self, messages: list[dict], round_num: int
-    ) -> tuple[list[dict], str]:
+    def manage_messages(self, messages: list[dict], round_num: int) -> tuple[list[dict], str]:
         """L1-only window management (strip/summarize). Returns (updated_messages, summary)."""
         if self._short_term is None:
             return messages, ""
@@ -2246,9 +2395,9 @@ class MemoryManager:
         if self._long_term is not None:
             memories = await self._long_term.retrieve(query)
             if memories:
-                parts.append(_format_memory_context(
-                    memories, self.config.long_term.memory_prompt_template
-                ))
+                parts.append(
+                    _format_memory_context(memories, self.config.long_term.memory_prompt_template)
+                )
                 memories_hit = True
             else:
                 memories_hit = False
@@ -2279,9 +2428,9 @@ class MemoryManager:
         if self._long_term is not None:
             memories = self._long_term.retrieve_sync(query)
             if memories:
-                parts.append(_format_memory_context(
-                    memories, self.config.long_term.memory_prompt_template
-                ))
+                parts.append(
+                    _format_memory_context(memories, self.config.long_term.memory_prompt_template)
+                )
                 memories_hit = True
             else:
                 memories_hit = False
@@ -2297,17 +2446,23 @@ class MemoryManager:
         return "\n\n".join(parts), updated_messages
 
     async def store(
-        self, session_id: str, request: str, files: list[str],
-        diff: str, commit_hash: str,
+        self,
+        session_id: str,
+        request: str,
+        files: list[str],
+        diff: str,
+        commit_hash: str,
     ) -> None:
         """Store session in L2 long-term memory."""
         if self._long_term is not None:
             await self._long_term.store(session_id, request, files, diff, commit_hash)
 
-    def store_sync(self, session_id: str, request: str, files: list[str],
-                   diff: str, commit_hash: str) -> None:
+    def store_sync(
+        self, session_id: str, request: str, files: list[str], diff: str, commit_hash: str
+    ) -> None:
         """Synchronous store for testing. Uses a fresh loop when none is running."""
         import asyncio
+
         if self._long_term is None:
             return
         coro = self._long_term.store(session_id, request, files, diff, commit_hash)
@@ -2384,7 +2539,7 @@ def _format_knowledge_context(entries: list[KnowledgeEntry]) -> str:
     for e in entries:
         fname = e.source_path
         text = e.chunk_text[:300].replace("\n", " ")
-        lines.append(f"- {fname}: \"{text}...\"")
+        lines.append(f'- {fname}: "{text}..."')
     return "\n".join(lines)
 ```
 
@@ -2475,8 +2630,10 @@ class TestKnowledgeEndpoints:
         class FakeEmbedder:
             def embed(self, text):
                 return [0.5] * 384
+
             def embed_batch(self, texts):
                 return [[0.5] * 384 for _ in texts]
+
             @property
             def dimension(self):
                 return 384
@@ -2484,19 +2641,29 @@ class TestKnowledgeEndpoints:
         class FakeStorage:
             def _get_conn(self):
                 return self
+
             def store_knowledge_chunks(self, source_path, chunks):
                 pass
+
             def upsert_knowledge_meta(self, source_path, source_type, file_hash, chunk_count):
                 pass
+
             def delete_knowledge_chunks(self, source_path):
                 pass
+
             def delete_knowledge_meta(self, source_path):
                 pass
+
             def list_knowledge_meta(self):
                 return [
-                    {"source_path": "api:test", "source_type": "api",
-                     "file_hash": None, "chunk_count": 1,
-                     "created_at": "2026-01-01", "updated_at": "2026-01-01"},
+                    {
+                        "source_path": "api:test",
+                        "source_type": "api",
+                        "file_hash": None,
+                        "chunk_count": 1,
+                        "created_at": "2026-01-01",
+                        "updated_at": "2026-01-01",
+                    },
                 ]
 
         storage = FakeStorage()
@@ -2505,6 +2672,7 @@ class TestKnowledgeEndpoints:
         mgr = MemoryManager(storage, embedder, cfg)
 
         from live_edit.router import setup_live_edit
+
         config = Config(memory=cfg)
         with patch("live_edit.router._resolve_api_key", return_value="test-key"):
             app.include_router(setup_live_edit(config))
@@ -2514,20 +2682,26 @@ class TestKnowledgeEndpoints:
         return TestClient(app)
 
     def test_upload_knowledge(self, client):
-        resp = client.post("/live-edit/knowledge", data={
-            "source_path": "api:rules",
-            "content": "All commits must be signed.",
-            "metadata": '{"tag": "git"}',
-        })
+        resp = client.post(
+            "/live-edit/knowledge",
+            data={
+                "source_path": "api:rules",
+                "content": "All commits must be signed.",
+                "metadata": '{"tag": "git"}',
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
     def test_upload_rejects_non_api_prefix(self, client):
-        resp = client.post("/live-edit/knowledge", data={
-            "source_path": "myfile.md",
-            "content": "test",
-            "metadata": "{}",
-        })
+        resp = client.post(
+            "/live-edit/knowledge",
+            data={
+                "source_path": "myfile.md",
+                "content": "test",
+                "metadata": "{}",
+            },
+        )
         assert resp.status_code == 400
 
     def test_list_knowledge(self, client):
@@ -2570,6 +2744,7 @@ git commit -m "feat: add MemoryManager and knowledge API endpoints"
 
 ```python
 # Add to tests/test_engine.py
+
 
 def test_memory_manager_integration():
     """Verify engine constructs MemoryManager correctly when config.memory.enabled is True."""
@@ -2690,10 +2865,12 @@ if memory_manager is not None:
         )
         if l1_summary:
             # Optionally surface the L1 summary into the context
-            messages.append({
-                "role": "user",
-                "content": f"[Prior rounds summarized] {l1_summary}",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"[Prior rounds summarized] {l1_summary}",
+                }
+            )
     except Exception as e:
         logger.warning("L1 window management failed: %s", e)
 # ... then call provider.call_with_tools(messages, ...) with the returned `messages`
@@ -2802,6 +2979,7 @@ from .memory import LongTermMemory as SessionMemory  # noqa: E402, F401
 ```python
 def query_chunks_vec(self, query_emb, limit, dim):
     return None  # fallback to brute-force cosine
+
 
 def update_chunk_hit_counts(self, chunk_ids):
     pass  # fake does not persist hit tracking

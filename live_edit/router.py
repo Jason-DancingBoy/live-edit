@@ -82,6 +82,7 @@ def setup_live_edit(
         vcs: Optional VCS override.
         api_key: API key override (takes priority over env var).
     """
+
     # Correlation middleware: echo X-Request-ID and scope the correlation contextvar to
     # every request (including SSE streams). APIRouter exposes no middleware API in the
     # installed FastAPI/Starlette, so we wrap each route handler via a custom route class.
@@ -169,8 +170,11 @@ def setup_live_edit(
 
         if not session_store.add(session):
             audit_log.record(
-                "session_rejected", target=session_id, session_id=session_id,
-                result="blocked", detail={"reason": "max_active_reached"},
+                "session_rejected",
+                target=session_id,
+                session_id=session_id,
+                result="blocked",
+                detail={"reason": "max_active_reached"},
             )
             metrics.inc("live_edit_sessions_total", {"outcome": "rejected"})
             raise HTTPException(status_code=503, detail="会话数已达上限，请稍后再试")
@@ -178,7 +182,9 @@ def setup_live_edit(
         mode = req.mode or getattr(config.ui, "default_mode", "quick")
 
         audit_log.record(
-            "session_start", target=session_id, session_id=session_id,
+            "session_start",
+            target=session_id,
+            session_id=session_id,
             detail={"mode": mode},
         )
         metrics.inc("live_edit_sessions_total", {"outcome": "started"})
@@ -211,7 +217,9 @@ def setup_live_edit(
                         event = await asyncio.wait_for(session.queue.get(), timeout=180.0)
                     except asyncio.TimeoutError:
                         audit_log.record(
-                            "session_timeout", target=session_id, session_id=session_id,
+                            "session_timeout",
+                            target=session_id,
+                            session_id=session_id,
                             result="timeout",
                         )
                         yield f"data: {json.dumps({'type': 'error', 'error': '会话超时'})}\n\n"
@@ -226,7 +234,9 @@ def setup_live_edit(
                 if not session._done:
                     session.cancel()
                     audit_log.record(
-                        "session_disconnect", target=session_id, session_id=session_id,
+                        "session_disconnect",
+                        target=session_id,
+                        session_id=session_id,
                         result="cancelled",
                     )
                 if not task.done():
@@ -258,7 +268,9 @@ def setup_live_edit(
             if session is None:
                 raise HTTPException(status_code=404, detail="会话不存在或已过期")
             audit_log.record(
-                "session_recovered", target=session_id, session_id=session_id,
+                "session_recovered",
+                target=session_id,
+                session_id=session_id,
                 result="recovered",
             )
             if not session_store.add(session):
@@ -267,7 +279,9 @@ def setup_live_edit(
         session.new_stream_queue()
         mode = req.mode or session._mode
         audit_log.record(
-            "session_continue", target=session_id, session_id=session_id,
+            "session_continue",
+            target=session_id,
+            session_id=session_id,
             detail={"mode": mode},
         )
         set_session_id(session_id)
@@ -306,7 +320,9 @@ def setup_live_edit(
                 if not session._done:
                     session.cancel()
                     audit_log.record(
-                        "session_disconnect", target=session_id, session_id=session_id,
+                        "session_disconnect",
+                        target=session_id,
+                        session_id=session_id,
                         result="cancelled",
                     )
                 if not task.done():

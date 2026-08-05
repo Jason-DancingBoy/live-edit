@@ -41,17 +41,11 @@ def test_database_only_contains_audit_events_table_and_indexes(tmp_path):
     _ = _audit(tmp_path)
     conn = sqlite3.connect(str(tmp_path / "audit.db"))
     tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
     assert "audit_events" in tables
     indexes = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index'"
-        ).fetchall()
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
     }
     assert "idx_audit_action_ts" in indexes
     assert "idx_audit_session" in indexes
@@ -69,8 +63,13 @@ def test_record_is_best_effort_on_failure(tmp_path, monkeypatch):
 
 def test_record_to_to_dict_fields(tmp_path):
     a = _audit(tmp_path)
-    a.record("tool_execution", session_id="le_1", target="edit_file", result="ok",
-             detail={"tool": "edit_file", "duration_ms": 12})
+    a.record(
+        "tool_execution",
+        session_id="le_1",
+        target="edit_file",
+        result="ok",
+        detail={"tool": "edit_file", "duration_ms": 12},
+    )
     ev = a.query()[0]
     d = ev.to_dict()
     assert d["action"] == "tool_execution"

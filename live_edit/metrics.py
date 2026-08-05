@@ -64,10 +64,7 @@ class Metrics:
                 lines.append(f"{name}_sum{_label_str(lab)} {h['sum']}")
                 for i, bucket in enumerate(BUCKETS):
                     lines.append(
-                        f'{name}_bucket{_label_str({**lab, "le": str(bucket)})} '
-                        f"{h['buckets'][i]}"
+                        f"{name}_bucket{_label_str({**lab, 'le': str(bucket)})} {h['buckets'][i]}"
                     )
-                lines.append(
-                    f'{name}_bucket{_label_str({**lab, "le": "+Inf"})} {h["count"]}'
-                )
+                lines.append(f"{name}_bucket{_label_str({**lab, 'le': '+Inf'})} {h['count']}")
             return "\n".join(lines) + "\n"

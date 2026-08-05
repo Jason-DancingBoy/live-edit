@@ -138,7 +138,7 @@ def test_stream_audits_session_start_and_metrics(tmp_path):
     assert resp.status_code == 200
     started = audit.query(action="session_start")
     assert len(started) == 1
-    assert "live_edit_sessions_total{outcome=\"started\"}" in metrics.render()
+    assert 'live_edit_sessions_total{outcome="started"}' in metrics.render()
 
 
 def test_correlation_id_header_is_echoed(tmp_path):

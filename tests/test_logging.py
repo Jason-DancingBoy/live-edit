@@ -70,9 +70,7 @@ def test_configure_logging_targets_live_edit_namespace_only():
     assert not le_logger.propagate
     assert len(le_logger.handlers) == 1
     # The root logger is not touched by configure_logging.
-    root_has_le_handler = any(
-        h is le_logger.handlers[0] for h in logging.getLogger().handlers
-    )
+    root_has_le_handler = any(h is le_logger.handlers[0] for h in logging.getLogger().handlers)
     assert not root_has_le_handler
 
 

@@ -477,9 +477,7 @@ class TestContinueRecovery:
         app = make_recovery_app(_recoverable_session_detail())
         client = TestClient(app)
 
-        resp = client.post(
-            "/live-edit/continue/s-recover", json={"request": "keep going"}
-        )
+        resp = client.post("/live-edit/continue/s-recover", json={"request": "keep going"})
 
         assert resp.status_code == 200
         assert '"done"' in resp.text
@@ -497,9 +495,7 @@ class TestContinueRecovery:
         client = TestClient(app)
 
         # Fill the single slot via /stream (adds to store synchronously)
-        with client.stream(
-            "POST", "/live-edit/stream", json={"request": "fill", "mode": "quick"}
-        ):
+        with client.stream("POST", "/live-edit/stream", json={"request": "fill", "mode": "quick"}):
             pass
 
         resp = client.post("/live-edit/continue/s-recover", json={"request": "keep going"})

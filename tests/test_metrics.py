@@ -55,4 +55,4 @@ def test_concurrent_increments_are_thread_safe():
     for t in threads:
         t.join()
     assert not errors
-    assert "live_edit_sessions_total{outcome=\"started\"} 800" in m.render()
+    assert 'live_edit_sessions_total{outcome="started"} 800' in m.render()
