@@ -946,13 +946,11 @@ class _FakeSession:
 
 
 class TestDoCommitBranchOnly:
-    def test_commit_keeps_branch_does_not_merge(self, tmp_path):
-        from unittest.mock import MagicMock
-
-        from live_edit.engine import _do_commit
+    @staticmethod
+    def _make_repo(tmp_path):
+        """Init a real git repo and create a worktree; returns (repo, vcs, wt_path)."""
         from live_edit.vcs import GitVCS
 
-        # Build a real git repo
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=str(repo), capture_output=True)
@@ -966,8 +964,16 @@ class TestDoCommitBranchOnly:
         subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True)
         subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo), capture_output=True)
-
         vcs = GitVCS(repo)
+        wt_path = vcs.create_worktree("sess-bonly")
+        return repo, vcs, wt_path
+
+    def test_commit_keeps_branch_does_not_merge(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from live_edit.engine import _do_commit
+
+        repo, vcs, wt_path = self._make_repo(tmp_path)
         main_before = subprocess.run(
             ["git", "rev-parse", "main"],
             cwd=str(repo),
@@ -975,7 +981,6 @@ class TestDoCommitBranchOnly:
             text=True,
         ).stdout.strip()
 
-        wt_path = vcs.create_worktree("sess-bonly")
         (Path(wt_path) / "new.py").write_text("print(1)")
         session = _FakeSession("sess-bonly", wt_path, ["new.py"])
 
@@ -1013,6 +1018,33 @@ class TestDoCommitBranchOnly:
         assert done_events, "expected a done event"
         assert any("live-edit/sess-bonly" in kw.get("message", "") for kw in done_events)
         assert session._committed is True
+
+    def test_commit_records_audit_action(self, tmp_path):
+        """A successful _do_commit records a single commit audit event."""
+        from unittest.mock import MagicMock
+
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.engine import _do_commit
+
+        repo, vcs, wt_path = self._make_repo(tmp_path)
+        (Path(wt_path) / "new.py").write_text("print(1)")
+        session = _FakeSession("sess-bonly", wt_path, ["new.py"])
+
+        storage = MagicMock()
+        config = MagicMock()
+        config.hooks = None
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+
+        import asyncio
+
+        asyncio.run(_do_commit(session, vcs, storage, config, audit_log=audit))
+
+        assert session._commit_hash, "expected a commit hash on success"
+        events = audit.query(action="commit")
+        assert len(events) == 1
+        assert events[0].result == "ok"
+        assert events[0].target == session._commit_hash
 
 
 class TestFormatMemoryContext:
@@ -1275,3 +1307,123 @@ class TestRehydrateSession:
         from live_edit.engine import rehydrate_session
 
         assert rehydrate_session("s-empty", {"request": "x", "messages": []}) is None
+
+
+class TestRollbackAudit:
+    @pytest.mark.asyncio
+    async def test_terminal_reject_records_rollback_audit(self, tmp_path):
+        """Rejecting the final approval records a rollback audit event."""
+        from unittest.mock import MagicMock
+
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.config import ModeConfig, ModePromptConfig
+        from live_edit.engine import EditSession, SessionStore, run_edit_session
+        from live_edit.vcs import GitVCS
+
+        # Real git repo so worktree + diff generation work.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), capture_output=True)
+        subprocess.run(  # noqa: E501
+            ["git", "config", "user.email", "t@t.com"],
+            cwd=str(repo),
+            capture_output=True,
+        )
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True)
+        (repo / "init.txt").write_text("init")
+        subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo), capture_output=True)
+        vcs = GitVCS(repo)
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+
+        config = _make_test_config()
+        config.modes["final_approve"] = ModeConfig(
+            label="Final",
+            approval="final",
+            tools="write",
+            approve_for=[],
+            prompt=ModePromptConfig(
+                base="You are a dev.",
+                user_persona="Developer.",
+                communication_rules="Use Chinese.",
+            ),
+        )
+
+        class FakeToolRegistry:
+            def get_tools(self, mode):
+                return ["write_file"]
+
+            def get_tool(self, name):
+                return None
+
+            async def execute(self, name, args, root, config):
+                (Path(root) / args["path"]).write_text("content")
+                return {"ok": True}
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "write_file",
+                        "id": "t1",
+                        "input": {"path": "a.py", "content": "x"},
+                    }
+                ],
+                [{"type": "text", "text": "done"}],
+            ]
+        )
+
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        session = EditSession("s-rollback", "Add a file")
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        task = asyncio.create_task(
+            run_edit_session(
+                session=session,
+                provider=provider,
+                vcs=vcs,
+                storage=mock_storage,
+                config=config,
+                mode="final_approve",
+                session_store=store,
+                tool_registry=FakeToolRegistry(),
+                audit_log=audit,
+            )
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 10
+            approved = False
+            while loop.time() < deadline:
+                try:
+                    event = session.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.05)
+                    continue
+                if (
+                    event is not None
+                    and event.get("type") == "tool_plan"
+                    and event.get("id") == "__final__"
+                ):
+                    session.approve("__final__", False)
+                    approved = True
+                    break
+            if not approved:
+                pytest.fail("timed out waiting for __final__ tool_plan")
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+
+        events = audit.query(action="rollback")
+        assert len(events) == 1
+        assert events[0].result == "ok"
+        assert events[0].target == session.id
+        assert session._outcome == "cancelled"

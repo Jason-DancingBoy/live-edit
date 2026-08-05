@@ -1,6 +1,7 @@
 """EditSession, agent loop, timeline compose, and error translation."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -442,7 +443,7 @@ async def _build_system_prompt(config: Config, mode: str) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=None):
+async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=None, audit_log=None):
     """Commit in worktree, keep the change on the session branch, clean up worktree.
 
     Does NOT merge into main — the change stays on live-edit/<session_id> for
@@ -529,6 +530,14 @@ async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=No
     except Exception as e:
         logger.error("Commit error: %s", e)
         session.emit("error", error=f"提交失败: {e}")
+    finally:
+        if audit_log is not None:
+            audit_log.record(
+                "commit",
+                target=session._commit_hash or session.id,
+                session_id=session.id,
+                result="ok" if session._committed else "failed",
+            )
 
 
 async def run_edit_session(
@@ -963,10 +972,9 @@ async def run_edit_session(
             # TTL counts from last activity, not last commit.
             _persist_session(session, storage, messages)
             if session._worktree_path:
-                try:
+                # worktree may be removed concurrently; not fatal to the round
+                with contextlib.suppress(OSError):
                     os.utime(session._worktree_path, None)
-                except OSError:
-                    pass  # worktree removed concurrently; not fatal to the round
 
             # Track consecutive write-less rounds; reset when a write tool was used
             if _round_has_write:
@@ -1143,7 +1151,7 @@ async def run_edit_session(
                 return
 
             if mode == "deep":
-                await _do_commit(session, vcs, storage, config)
+                await _do_commit(session, vcs, storage, config, audit_log=audit_log)
                 session._outcome = "completed" if session._committed else "failed"
             else:
                 final = await session.wait_for_approval(
@@ -1157,7 +1165,7 @@ async def run_edit_session(
                 )
 
                 if final.get("approved"):
-                    await _do_commit(session, vcs, storage, config)
+                    await _do_commit(session, vcs, storage, config, audit_log=audit_log)
                     session._outcome = "completed" if session._committed else "failed"
                 else:
                     # Rollback: just remove the worktree, no merge
@@ -1168,6 +1176,13 @@ async def run_edit_session(
                         pass
                     session._committed = False
                     session._outcome = "cancelled"
+                    if audit_log is not None:
+                        audit_log.record(
+                            "rollback",
+                            target=session.id,
+                            session_id=session.id,
+                            result="ok",
+                        )
                     session.emit("done", committed=False, message="更改已放弃。", can_continue=True)
 
     except Exception as e:
