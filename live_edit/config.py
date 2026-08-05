@@ -109,6 +109,14 @@ class EvaluationConfig:
 
 
 @dataclass
+class ObservabilityConfig:
+    log_level: str = "INFO"
+    json_logs: bool = True
+    metrics_enabled: bool = True
+    audit_enabled: bool = True
+
+
+@dataclass
 class EmbedderConfig:
     type: str = "local"
     model: str = "thenlper/gte-small"
@@ -226,6 +234,7 @@ class Config:
     preview: PreviewConfig = field(default_factory=PreviewConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     toml_tools: list[dict] = field(default_factory=list)
 
     @property
@@ -260,6 +269,15 @@ def _parse_timeouts(data: dict) -> TimeoutsConfig:
         session_ttl=data.get("session_ttl", 1800),
         max_rounds=data.get("max_rounds", 15),
         stale_worktree_ttl=data.get("stale_worktree_ttl", 86400),
+    )
+
+
+def _parse_observability(data: dict) -> ObservabilityConfig:
+    return ObservabilityConfig(
+        log_level=data.get("log_level", "INFO"),
+        json_logs=data.get("json_logs", True),
+        metrics_enabled=data.get("metrics_enabled", True),
+        audit_enabled=data.get("audit_enabled", True),
     )
 
 
@@ -352,6 +370,8 @@ def parse_config(path: str) -> Config:
         screenshot=eval_data.get("screenshot", False),
         preview_pages=eval_data.get("preview_pages", ["/"]),
     )
+
+    observability = _parse_observability(raw.get("observability", {}))
 
     # Parse [memory] section (new) with [session_memory] fallback
     mem_data = raw.get("memory", {})
@@ -454,6 +474,7 @@ def parse_config(path: str) -> Config:
         preview=preview,
         evaluation=evaluation,
         memory=memory,
+        observability=observability,
         toml_tools=toml_tools,
     )
 

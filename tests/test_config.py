@@ -1,6 +1,8 @@
 """Tests for live_edit.config — config parsing, validation, auto-detection."""
 
 from live_edit.config import (
+    Config,
+    ObservabilityConfig,
     detect_project,
     parse_config,
     validate_config,
@@ -330,3 +332,43 @@ class TestDetectProject:
         info = detect_project(str(tmp_path))
         assert info["vcs"] == "git"
         assert info["git_available"]
+
+
+class TestObservabilityConfig:
+    def test_observability_defaults_when_absent(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            "[project]\nname = \"TestApp\"\nlanguage = \"python\"\n\n"
+            "[llm]\napi_url = \"https://api.example.com\"\napi_key_env = \"KEY\"\nmodel = \"m1\"\n\n"
+            "[modes.quick]\nlabel = \"Q\"\n"
+        )
+        config = parse_config(str(toml_path))
+        assert config.observability.log_level == "INFO"
+        assert config.observability.json_logs is True
+        assert config.observability.metrics_enabled is True
+        assert config.observability.audit_enabled is True
+
+    def test_observability_parses_values(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            "[project]\nname = \"TestApp\"\nlanguage = \"python\"\n\n"
+            "[llm]\napi_url = \"https://api.example.com\"\napi_key_env = \"KEY\"\nmodel = \"m1\"\n\n"
+            "[modes.quick]\nlabel = \"Q\"\n\n"
+            "[observability]\nlog_level = \"DEBUG\"\njson_logs = false\n"
+            "metrics_enabled = false\naudit_enabled = false\n"
+        )
+        config = parse_config(str(toml_path))
+        assert config.observability.log_level == "DEBUG"
+        assert config.observability.json_logs is False
+        assert config.observability.metrics_enabled is False
+        assert config.observability.audit_enabled is False
+
+    def test_old_config_without_observability_still_validates(self, tmp_path):
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text(
+            "[project]\nname = \"TestApp\"\nlanguage = \"python\"\n\n"
+            "[llm]\napi_url = \"https://api.example.com\"\napi_key_env = \"KEY\"\nmodel = \"m1\"\n\n"
+            "[modes.quick]\nlabel = \"Q\"\n"
+        )
+        config = parse_config(str(toml_path))
+        assert validate_config(config) == []
