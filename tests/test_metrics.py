@@ -1,4 +1,4 @@
-from live_edit.metrics import BUCKETS, Metrics
+from live_edit.metrics import Metrics
 
 
 def test_counter_inc_and_render():
