@@ -657,6 +657,219 @@ class TestRunEditSession:
         assert os.path.getmtime(tmp) > old
 
 
+# ── run_edit_session audit + metrics wiring ──
+
+
+class TestRunEditSessionAuditMetrics:
+    @pytest.mark.asyncio
+    async def test_tool_execution_records_audit_and_metrics(self, tmp_path):
+        """A read_file tool execution records a tool_execution audit + metrics."""
+        import os
+        import tempfile
+
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.metrics import Metrics
+        from live_edit.tool_registry import DefaultToolRegistry
+
+        tmp = tempfile.mkdtemp()
+        fpath = os.path.join(tmp, "test.py")
+        with open(fpath, "w") as f:
+            f.write("print('hello')")
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+        metrics = Metrics()
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "read_file",
+                        "id": "t1",
+                        "input": {"path": "test.py"},
+                    }
+                ],
+            ]
+        )
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tmp
+        mock_storage = MagicMock()
+
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
+
+        config = _make_test_config()
+        config.project.root = tmp
+
+        session = EditSession("s1", "Read test.py")
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+            tool_registry=registry,
+            audit_log=audit,
+            metrics=metrics,
+        )
+
+        events = audit.query(action="tool_execution")
+        assert len(events) == 1
+        assert events[0].detail.get("tool") == "read_file"
+        assert events[0].result == "ok"
+
+        rendered = metrics.render()
+        assert 'live_edit_tool_executions_total{status="ok",tool="read_file"} 1' in rendered
+        assert 'live_edit_llm_calls_total{status="ok"}' in rendered
+        assert session._outcome == "completed"
+
+    @pytest.mark.asyncio
+    async def test_session_completed_records_audit_and_metrics(self, tmp_path):
+        """A session that finishes without edits records session_completed."""
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.metrics import Metrics
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+        metrics = Metrics()
+
+        provider = FakeProvider(
+            [
+                [{"type": "text", "text": "I'll help with that."}],
+            ]
+        )
+        mock_vcs = MagicMock()
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        config = _make_test_config()
+
+        session = EditSession("s1", "Add a button")
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
+            session_store=store,
+            audit_log=audit,
+            metrics=metrics,
+        )
+
+        events = audit.query(action="session_completed")
+        assert len(events) == 1
+        assert events[0].session_id == "s1"
+        assert session._outcome == "completed"
+
+        rendered = metrics.render()
+        assert 'live_edit_sessions_total{outcome="completed"} 1' in rendered
+        assert 'live_edit_llm_calls_total{status="ok"}' in rendered
+
+    @pytest.mark.asyncio
+    async def test_session_error_records_failed_outcome(self, tmp_path):
+        """A provider exception records session_failed + error LLM metrics."""
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.metrics import Metrics
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+        metrics = Metrics()
+
+        class BoomProvider:
+            async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
+                raise RuntimeError("provider exploded")
+
+        mock_vcs = MagicMock()
+        mock_storage = MagicMock()
+
+        config = _make_test_config()
+
+        session = EditSession("s1", "boom")
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=BoomProvider(),
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
+            session_store=store,
+            audit_log=audit,
+            metrics=metrics,
+        )
+
+        events = audit.query(action="session_failed")
+        assert len(events) == 1
+        assert events[0].session_id == "s1"
+        assert session._outcome == "failed"
+
+        rendered = metrics.render()
+        assert 'live_edit_sessions_total{outcome="failed"} 1' in rendered
+        assert 'live_edit_llm_calls_total{status="error"} 1' in rendered
+
+    @pytest.mark.asyncio
+    async def test_fix_loop_records_tool_audit_and_metrics(self, tmp_path):
+        """The evaluation fix loop wraps tool execution + LLM calls with audit/metrics."""
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.engine import _run_agent_loop_fix
+        from live_edit.metrics import Metrics
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+        metrics = Metrics()
+
+        class FakeToolRegistry:
+            def get_tools(self, mode):
+                return ["edit_file"]
+
+            async def execute(self, name, args, root, config):
+                return {"ok": True}
+
+        session = EditSession("s1", "fix")
+        session._mode = "deep"
+        session._worktree_path = "/tmp/nowhere"
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "edit_file",
+                        "id": "t1",
+                        "input": {"path": "x.py"},
+                    }
+                ],
+            ]
+        )
+
+        await _run_agent_loop_fix(
+            session=session,
+            provider=provider,
+            config=_make_test_config(),
+            tool_registry=FakeToolRegistry(),
+            max_rounds=2,
+            audit_log=audit,
+            metrics=metrics,
+        )
+
+        events = audit.query(action="tool_execution")
+        assert len(events) == 1
+        assert events[0].detail.get("tool") == "edit_file"
+        assert events[0].result == "ok"
+
+        rendered = metrics.render()
+        assert 'live_edit_tool_executions_total{status="ok",tool="edit_file"} 1' in rendered
+        assert 'live_edit_llm_calls_total{status="ok"} 2' in rendered
+
+
 # ── helpers ──
 
 

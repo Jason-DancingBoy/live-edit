@@ -57,6 +57,16 @@ def translate_error(
     return error
 
 
+def _tool_status(exec_result: dict) -> str:
+    """Map a tool exec_result dict to a metrics status: ok | blocked | error."""
+    if exec_result.get("ok"):
+        return "ok"
+    error = str(exec_result.get("error", "")).lower()
+    if any(k in error for k in ("危险操作", "已阻止", "blocked", "拦截", "越界")):
+        return "blocked"
+    return "error"
+
+
 def _repair_messages(messages: list[dict]) -> None:
     """Strip unpaired tool_use blocks from the tail of the conversation.
 
@@ -146,6 +156,7 @@ class EditSession:
         self._committed = False
         self._commit_hash = ""
         self._mode = "quick"
+        self._outcome: str = "failed"  # terminal outcome: completed/cancelled/failed
         self._created_at = time.time()
         self._worktree_path: str = ""
         self._merged: bool = False
@@ -208,6 +219,12 @@ class SessionStore:
         self.ttl_seconds = ttl_seconds
         self.audit_log = audit_log
 
+    def _audit_expired(self, session_id: str) -> None:
+        if self.audit_log is not None:
+            self.audit_log.record(
+                "session_expired", target=session_id, session_id=session_id, result="expired"
+            )
+
     def add(self, session: EditSession) -> bool:
         """Add a session. Returns False if at capacity."""
         self._expire_stale()
@@ -222,6 +239,7 @@ class SessionStore:
         if session is None:
             return None
         if time.time() - session._created_at > self.ttl_seconds:
+            self._audit_expired(session_id)
             self.remove(session_id)
             return None
         return session
@@ -235,6 +253,7 @@ class SessionStore:
         now = time.time()
         stale = [sid for sid, s in self._sessions.items() if now - s._created_at > self.ttl_seconds]
         for sid in stale:
+            self._audit_expired(sid)
             self._sessions.pop(sid, None)
 
     @property
@@ -292,7 +311,9 @@ def build_timeline(vcs: VCS, storage: Storage, limit: int = 30) -> list[dict]:
     return entries[:limit]
 
 
-async def _run_agent_loop_fix(session, provider, config, tool_registry, max_rounds: int = 5):
+async def _run_agent_loop_fix(
+    session, provider, config, tool_registry, max_rounds: int = 5, audit_log=None, metrics=None
+):
     """Simplified agent loop for evaluation fix rounds. Fewer rounds, no nudging."""
     if not tool_registry:
         return
@@ -304,12 +325,22 @@ async def _run_agent_loop_fix(session, provider, config, tool_registry, max_roun
         if session._cancelled.is_set():
             break
 
-        content_blocks = await provider.call_with_tools(
-            messages=session.messages,
-            tools=tools,
-            on_thinking=lambda t: None,
-            on_text=lambda t: session.emit("text", text=t),
-        )
+        _llm_t0 = time.monotonic()
+        try:
+            content_blocks = await provider.call_with_tools(
+                messages=session.messages,
+                tools=tools,
+                on_thinking=lambda t: None,
+                on_text=lambda t: session.emit("text", text=t),
+            )
+            _llm_status = "ok" if content_blocks is not None else "error"
+        except Exception:
+            _llm_status = "error"
+            raise
+        finally:
+            if metrics is not None:
+                metrics.inc("live_edit_llm_calls_total", {"status": _llm_status})
+                metrics.observe("live_edit_llm_duration_seconds", time.monotonic() - _llm_t0)
 
         if content_blocks is None:
             break
@@ -345,9 +376,32 @@ async def _run_agent_loop_fix(session, provider, config, tool_registry, max_roun
 
         tool_results = []
         for tool in tool_uses:
+            _tool_t0 = time.monotonic()
             exec_result = await tool_registry.execute(
                 tool["name"], tool.get("input", {}), _root, config
             )
+            _tool_dur = int((time.monotonic() - _tool_t0) * 1000)
+            _tool_status_val = _tool_status(exec_result)
+            if metrics is not None:
+                metrics.inc(
+                    "live_edit_tool_executions_total",
+                    {"tool": tool["name"], "status": _tool_status_val},
+                )
+                metrics.observe(
+                    "live_edit_tool_duration_ms", _tool_dur, {"tool": tool["name"]}
+                )
+            if audit_log is not None:
+                audit_log.record(
+                    "tool_execution",
+                    target=tool["name"],
+                    session_id=session.id,
+                    result=_tool_status_val,
+                    detail={
+                        "tool": tool["name"],
+                        "args_summary": _tool_summary(tool["name"], tool.get("input", {})),
+                        "duration_ms": _tool_dur,
+                    },
+                )
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -499,6 +553,9 @@ async def run_edit_session(
     tools = tool_registry.get_tools(mode) if tool_registry else []
     session._mode = mode
 
+    if metrics is not None:
+        metrics.inc("live_edit_active_sessions")
+
     # ── Create isolated worktree for this session ──
     if not session._worktree_path:
         session._worktree_path = vcs.create_worktree(session.id)
@@ -511,6 +568,13 @@ async def run_edit_session(
         if preview_url:
             session._preview_url = preview_url
             session.emit("preview_ready", url=f"{preview_url}/app")
+            if audit_log is not None:
+                audit_log.record(
+                    "preview_start",
+                    target=session.id,
+                    session_id=session.id,
+                    detail={"url": f"{preview_url}/app"},
+                )
 
     # ── Memory system setup ──
     from .embedder import LocalEmbedder
@@ -622,6 +686,7 @@ async def run_edit_session(
     try:
         while round_num < max_rounds:
             if session._cancelled.is_set():
+                session._outcome = "cancelled"
                 logger.info("Session %s cancelled at round %d", session.id, round_num)
                 break
             round_num += 1
@@ -661,12 +726,24 @@ async def run_edit_session(
                 except Exception as e:
                     logger.warning("L1 window management failed: %s", e)
 
-            content_blocks = await provider.call_with_tools(
-                messages=messages,
-                tools=tools,
-                on_thinking=on_thinking,
-                on_text=_on_text,
-            )
+            _llm_t0 = time.monotonic()
+            try:
+                content_blocks = await provider.call_with_tools(
+                    messages=messages,
+                    tools=tools,
+                    on_thinking=on_thinking,
+                    on_text=_on_text,
+                )
+                _llm_status = "ok" if content_blocks is not None else "error"
+            except Exception:
+                _llm_status = "error"
+                raise
+            finally:
+                if metrics is not None:
+                    metrics.inc("live_edit_llm_calls_total", {"status": _llm_status})
+                    metrics.observe(
+                        "live_edit_llm_duration_seconds", time.monotonic() - _llm_t0
+                    )
 
             if content_blocks is None:
                 session.emit("error", error="LLM 调用失败")
@@ -674,6 +751,7 @@ async def run_edit_session(
 
             # Check cancellation after potentially long LLM call
             if session._cancelled.is_set():
+                session._outcome = "cancelled"
                 logger.info("Session %s cancelled after LLM call", session.id)
                 break
 
@@ -823,11 +901,34 @@ async def run_edit_session(
                         auto=True,
                     )
 
+                _tool_t0 = time.monotonic()
                 exec_result = (
                     await tool_registry.execute(tool_name, tool_input, _root, config)
                     if tool_registry
                     else {"ok": False, "error": "No tool registry"}
                 )
+                _tool_dur = int((time.monotonic() - _tool_t0) * 1000)
+                _tool_status_val = _tool_status(exec_result)
+                if metrics is not None:
+                    metrics.inc(
+                        "live_edit_tool_executions_total",
+                        {"tool": tool_name, "status": _tool_status_val},
+                    )
+                    metrics.observe(
+                        "live_edit_tool_duration_ms", _tool_dur, {"tool": tool_name}
+                    )
+                if audit_log is not None:
+                    audit_log.record(
+                        "tool_execution",
+                        target=tool_name,
+                        session_id=session.id,
+                        result=_tool_status_val,
+                        detail={
+                            "tool": tool_name,
+                            "args_summary": _tool_summary(tool_name, tool_input),
+                            "duration_ms": _tool_dur,
+                        },
+                    )
                 if not exec_result.get("ok") and mode == "quick":
                     exec_result["error"] = translate_error(
                         str(exec_result.get("error", "")),
@@ -937,6 +1038,8 @@ async def run_edit_session(
                     config=config,
                     tool_registry=tool_registry,
                     max_rounds=5,
+                    audit_log=audit_log,
+                    metrics=metrics,
                 )
                 # Refresh diff for next evaluation round
                 _sp2.run(
@@ -990,6 +1093,7 @@ async def run_edit_session(
                 text=True,
                 timeout=10,
             )
+            session._outcome = "completed"
             session.emit("done", committed=False, message="完成", can_continue=True)
         else:
             try:
@@ -1019,6 +1123,7 @@ async def run_edit_session(
                         text=True,
                         timeout=10,
                     )
+                    session._outcome = "completed"
                     session.emit(
                         "done",
                         committed=False,
@@ -1039,6 +1144,7 @@ async def run_edit_session(
 
             if mode == "deep":
                 await _do_commit(session, vcs, storage, config)
+                session._outcome = "completed" if session._committed else "failed"
             else:
                 final = await session.wait_for_approval(
                     "__final__",
@@ -1052,6 +1158,7 @@ async def run_edit_session(
 
                 if final.get("approved"):
                     await _do_commit(session, vcs, storage, config)
+                    session._outcome = "completed" if session._committed else "failed"
                 else:
                     # Rollback: just remove the worktree, no merge
                     try:
@@ -1060,21 +1167,37 @@ async def run_edit_session(
                     except Exception:
                         pass
                     session._committed = False
+                    session._outcome = "cancelled"
                     session.emit("done", committed=False, message="更改已放弃。", can_continue=True)
 
     except Exception as e:
+        session._outcome = "failed"
         logger.error("Session %s error: %s\n%s", session.id, e, traceback.format_exc())
         session.emit("error", error=str(e))
 
     finally:
         session._done = True
         session.messages = messages
+        if metrics is not None:
+            metrics.inc("live_edit_sessions_total", {"outcome": session._outcome})
+            metrics.inc("live_edit_active_sessions", value=-1)
+        if audit_log is not None:
+            audit_log.record(
+                f"session_{session._outcome}",
+                target=session.id,
+                session_id=session.id,
+                result=session._outcome,
+            )
         _persist_session(session, storage, messages)
         # Stop preview server before cleaning up worktree.
         # Keep it running when the session committed successfully — the user
         # may want to keep previewing changes until admin merges the branch.
         if preview_manager and not session._committed:
             await preview_manager.stop(session.id)
+            if audit_log is not None:
+                audit_log.record(
+                    "preview_stop", target=session.id, session_id=session.id, result="stopped"
+                )
         # Clean up worktree if not merged/removed yet (e.g. exception before commit)
         if not session._merged and session._worktree_path:
             try:
@@ -1178,4 +1301,6 @@ async def continue_edit_session(
         preview_manager=preview_manager,
         session_store=session_store,
         tool_registry=tool_registry,
+        audit_log=audit_log,
+        metrics=metrics,
     )
