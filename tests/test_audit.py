@@ -1,7 +1,5 @@
 import sqlite3
 
-import pytest
-
 from live_edit.audit import SQLiteAuditLog
 
 
@@ -40,7 +38,7 @@ def test_events_are_append_only_no_delete_or_update_methods():
 
 
 def test_database_only_contains_audit_events_table_and_indexes(tmp_path):
-    a = _audit(tmp_path)
+    _ = _audit(tmp_path)
     conn = sqlite3.connect(str(tmp_path / "audit.db"))
     tables = {
         r[0]
