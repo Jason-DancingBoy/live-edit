@@ -11,6 +11,7 @@ import threading
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import cast
 
 logger = logging.getLogger("live-edit.audit")
 
@@ -51,7 +52,8 @@ class AuditLog:
         session_id: str = "",
         result: str = "ok",
         detail: dict | None = None,
-    ) -> int: ...
+    ) -> int:
+        raise NotImplementedError
 
     def query(
         self,
@@ -62,7 +64,8 @@ class AuditLog:
         limit: int = 100,
         after: str | None = None,
         before: str | None = None,
-    ) -> list[AuditEvent]: ...
+    ) -> list[AuditEvent]:
+        raise NotImplementedError
 
 
 class SQLiteAuditLog(AuditLog):
@@ -79,7 +82,7 @@ class SQLiteAuditLog(AuditLog):
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn = conn
-        return self._local.conn
+        return cast(sqlite3.Connection, self._local.conn)
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -112,9 +115,9 @@ class SQLiteAuditLog(AuditLog):
         result: str = "ok",
         detail: dict | None = None,
     ) -> int:
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        detail_json = json.dumps(detail or {}, ensure_ascii=False)
         try:
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            detail_json = json.dumps(detail or {}, ensure_ascii=False)
             conn = self._get_conn()
             cur = conn.execute(
                 """INSERT INTO audit_events
@@ -123,7 +126,7 @@ class SQLiteAuditLog(AuditLog):
                 (ts, actor, action, target, session_id, result, detail_json),
             )
             conn.commit()
-            return int(cur.lastrowid)
+            return cur.lastrowid if cur.lastrowid is not None else 0
         except Exception:
             logger.warning(
                 "Audit record failed (action=%s, session=%s): %s",
