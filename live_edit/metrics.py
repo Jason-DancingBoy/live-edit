@@ -56,8 +56,8 @@ class Metrics:
             lines: list[str] = []
             for (name, labels), value in sorted(self._counters.items()):
                 lines.append(f"{name}{_label_str(dict(labels))} {value}")
-            for (name, labels), value in sorted(self._gauges.items()):
-                lines.append(f"{name}{_label_str(dict(labels))} {value}")
+            for (name, labels), gvalue in sorted(self._gauges.items()):
+                lines.append(f"{name}{_label_str(dict(labels))} {gvalue}")
             for (name, labels), h in sorted(self._histograms.items()):
                 lab = dict(labels)
                 lines.append(f"{name}_count{_label_str(lab)} {h['count']}")
