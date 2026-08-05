@@ -1,8 +1,6 @@
 """Tests for live_edit.config — config parsing, validation, auto-detection."""
 
 from live_edit.config import (
-    Config,
-    ObservabilityConfig,
     detect_project,
     parse_config,
     validate_config,
