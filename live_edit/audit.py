@@ -68,6 +68,38 @@ class AuditLog:
         raise NotImplementedError
 
 
+class NullAuditLog(AuditLog):
+    """No-op audit log used when auditing is disabled.
+
+    Matches the AuditLog interface exactly but records nothing and returns
+    empty queries, so observability can never break the app.
+    """
+
+    def record(
+        self,
+        action: str,
+        *,
+        actor: str = "anonymous",
+        target: str = "",
+        session_id: str = "",
+        result: str = "ok",
+        detail: dict | None = None,
+    ) -> int:
+        return 0
+
+    def query(
+        self,
+        *,
+        action: str | None = None,
+        actor: str | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[AuditEvent]:
+        return []
+
+
 class SQLiteAuditLog(AuditLog):
     """Append-only audit log backed by SQLite (shares the app's live_edit.db)."""
 

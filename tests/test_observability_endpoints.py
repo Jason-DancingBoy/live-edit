@@ -7,10 +7,10 @@ from live_edit.metrics import Metrics
 from live_edit.router import setup_live_edit
 
 
-def _write_config(tmp_path):
+def _write_config(tmp_path, audit_enabled: bool = True):
     cfg = tmp_path / ".live-edit.toml"
     cfg.write_text(
-        """[project]
+        f"""[project]
 name = "TestApp"
 language = "python"
 root = "."
@@ -36,14 +36,16 @@ base = "You are a helpful AI."
 log_level = "INFO"
 json_logs = true
 metrics_enabled = true
-audit_enabled = true
+audit_enabled = {str(audit_enabled).lower()}
 """
     )
     return str(cfg)
 
 
-def _client(tmp_path, **kwargs):
-    _write_config(tmp_path)  # config file must exist: parse_config raises FileNotFoundError otherwise
+def _client(tmp_path, audit_enabled: bool = True, **kwargs):
+    _write_config(
+        tmp_path, audit_enabled=audit_enabled
+    )  # config file must exist: parse_config raises FileNotFoundError otherwise
     app = FastAPI()
     router = setup_live_edit(
         project_root=str(tmp_path),
@@ -143,3 +145,32 @@ def test_correlation_id_header_is_echoed(tmp_path):
     client = _client(tmp_path)
     resp = client.get("/live-edit/health", headers={"X-Request-ID": "req-custom"})
     assert resp.headers.get("X-Request-ID") == "req-custom"
+
+
+def test_audit_disabled_does_not_crash(tmp_path):
+    """audit_enabled=false with no injected audit_log must not break the app.
+
+    The no-op NullAuditLog keeps record/query safe, so health, the SSE stream,
+    and the admin audit endpoint all still work.
+    """
+    from unittest.mock import MagicMock
+
+    class FakeProvider:
+        async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
+            return [{"type": "text", "text": "Done."}]
+
+    mock_vcs = MagicMock()
+    mock_vcs.create_worktree.return_value = str(tmp_path)
+    client = _client(
+        tmp_path,
+        audit_enabled=False,
+        provider=FakeProvider(),
+        vcs=mock_vcs,
+    )
+    health = client.get("/live-edit/health")
+    assert health.status_code == 200
+    stream = client.post("/live-edit/stream", json={"request": "hello", "mode": "quick"})
+    assert stream.status_code == 200
+    audit = client.get("/live-edit/admin/audit", headers={"X-Admin-Key": "secret-admin"})
+    assert audit.status_code == 200
+    assert audit.json() == {"events": []}

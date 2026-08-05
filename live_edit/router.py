@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
-from .audit import AuditLog, SQLiteAuditLog
+from .audit import AuditLog, NullAuditLog, SQLiteAuditLog
 from .config import parse_config
 from .engine import (
     EditSession,
@@ -128,7 +128,10 @@ def setup_live_edit(
     configure_logging(
         level=config.observability.log_level, json_logs=config.observability.json_logs
     )
-    assert audit_log is not None  # endpoints audit unconditionally
+    if audit_log is None:
+        # audit_enabled=false (or a caller that injected nothing) must never break
+        # the app: audit writes are best-effort no-ops, not a crash.
+        audit_log = NullAuditLog()
 
     # Global session store
     ttl = getattr(config.timeouts, "session_ttl", 1800) if hasattr(config, "timeouts") else 1800
