@@ -9,8 +9,10 @@ Custom implementations:
     app.include_router(setup_live_edit(provider=MyProvider(), storage=MyStorage()))
 """
 
+from .audit import AuditLog, SQLiteAuditLog
 from .config import Config, detect_project, parse_config, validate_config
 from .engine import EditSession, SessionStore, build_timeline, translate_error
+from .metrics import Metrics
 from .preview import PreviewManager
 from .provider import AnthropicCompatibleProvider, Provider
 from .storage import SQLiteStorage, Storage
@@ -27,6 +29,11 @@ def setup_live_edit(*args, **kwargs):
 __all__ = [
     # Setup
     "setup_live_edit",
+    # Audit
+    "AuditLog",
+    "SQLiteAuditLog",
+    # Metrics
+    "Metrics",
     # Provider
     "Provider",
     "AnthropicCompatibleProvider",

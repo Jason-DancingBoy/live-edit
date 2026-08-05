@@ -202,10 +202,11 @@ class EditSession:
 class SessionStore:
     """Global in-memory session registry with TTL and max capacity."""
 
-    def __init__(self, max_active: int = 10, ttl_seconds: int = 1800):
+    def __init__(self, max_active: int = 10, ttl_seconds: int = 1800, audit_log=None):
         self._sessions: dict[str, EditSession] = {}
         self.max_active = max_active
         self.ttl_seconds = ttl_seconds
+        self.audit_log = audit_log
 
     def add(self, session: EditSession) -> bool:
         """Add a session. Returns False if at capacity."""
@@ -487,6 +488,8 @@ async def run_edit_session(
     preview_manager=None,
     session_store: SessionStore | None = None,
     tool_registry=None,
+    audit_log=None,
+    metrics=None,
 ):
     """Run the agent loop for a session. Pushes SSE events to session.queue.
 
@@ -1145,6 +1148,8 @@ async def continue_edit_session(
     preview_manager=None,
     session_store: SessionStore | None = None,
     tool_registry=None,
+    audit_log=None,
+    metrics=None,
 ):
     """Continue an existing session with a new request."""
     session.request = new_request

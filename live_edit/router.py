@@ -10,9 +10,11 @@ from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
+from .audit import AuditLog, SQLiteAuditLog
 from .config import parse_config
 from .engine import (
     EditSession,
@@ -22,6 +24,8 @@ from .engine import (
     rehydrate_session,
     run_edit_session,
 )
+from .logging import configure_logging, set_correlation_id, set_session_id
+from .metrics import Metrics
 from .preview import PreviewManager
 from .provider import AnthropicCompatibleProvider, Provider
 from .storage import SQLiteStorage, Storage
@@ -65,6 +69,8 @@ def setup_live_edit(
     api_key: str = "",
     admin_key: str = "",
     tool_registry: object | None = None,
+    audit_log: AuditLog | None = None,
+    metrics: Metrics | None = None,
 ) -> APIRouter:
     """Create and return a FastAPI router with all live-edit endpoints.
 
@@ -76,7 +82,23 @@ def setup_live_edit(
         vcs: Optional VCS override.
         api_key: API key override (takes priority over env var).
     """
-    router = APIRouter(prefix="/live-edit", tags=["live-edit"])
+    # Correlation middleware: echo X-Request-ID and scope the correlation contextvar to
+    # every request (including SSE streams). APIRouter exposes no middleware API in the
+    # installed FastAPI/Starlette, so we wrap each route handler via a custom route class.
+    class CorrelationRoute(APIRoute):
+        def get_route_handler(self):
+            original_handler = super().get_route_handler()
+
+            async def handler(request: Request):
+                cid = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+                set_correlation_id(cid)
+                response = await original_handler(request)
+                response.headers["X-Request-ID"] = cid
+                return response
+
+            return handler
+
+    router = APIRouter(prefix="/live-edit", tags=["live-edit"], route_class=CorrelationRoute)
 
     # Load config
     resolved_config_path = (
@@ -98,10 +120,20 @@ def setup_live_edit(
     if vcs is None:
         vcs = GitVCS(project_root, worktree_ttl=config.timeouts.stale_worktree_ttl)
 
+    # Observability: audit log + metrics + structured logging.
+    if audit_log is None and config.observability.audit_enabled:
+        audit_log = SQLiteAuditLog(os.path.join(project_root, "live_edit.db"))
+    if metrics is None:
+        metrics = Metrics()
+    configure_logging(
+        level=config.observability.log_level, json_logs=config.observability.json_logs
+    )
+    assert audit_log is not None  # endpoints audit unconditionally
+
     # Global session store
     ttl = getattr(config.timeouts, "session_ttl", 1800) if hasattr(config, "timeouts") else 1800
     max_active = getattr(config.sessions, "max_active", 10) if hasattr(config, "sessions") else 10
-    session_store = SessionStore(max_active=max_active, ttl_seconds=ttl)
+    session_store = SessionStore(max_active=max_active, ttl_seconds=ttl, audit_log=audit_log)
 
     # Tool registry
     if tool_registry is None:
@@ -133,9 +165,21 @@ def setup_live_edit(
         session = EditSession(session_id, req.request)
 
         if not session_store.add(session):
+            audit_log.record(
+                "session_rejected", target=session_id, session_id=session_id,
+                result="blocked", detail={"reason": "max_active_reached"},
+            )
+            metrics.inc("live_edit_sessions_total", {"outcome": "rejected"})
             raise HTTPException(status_code=503, detail="会话数已达上限，请稍后再试")
 
         mode = req.mode or getattr(config.ui, "default_mode", "quick")
+
+        audit_log.record(
+            "session_start", target=session_id, session_id=session_id,
+            detail={"mode": mode},
+        )
+        metrics.inc("live_edit_sessions_total", {"outcome": "started"})
+        set_session_id(session_id)
 
         async def event_generator() -> AsyncIterator[str]:
             # Emit session event so frontend knows the session ID
@@ -153,6 +197,8 @@ def setup_live_edit(
                     preview_manager=preview_manager,
                     session_store=session_store,
                     tool_registry=tool_registry,
+                    audit_log=audit_log,
+                    metrics=metrics,
                 )
             )
 
@@ -161,6 +207,10 @@ def setup_live_edit(
                     try:
                         event = await asyncio.wait_for(session.queue.get(), timeout=180.0)
                     except asyncio.TimeoutError:
+                        audit_log.record(
+                            "session_timeout", target=session_id, session_id=session_id,
+                            result="timeout",
+                        )
                         yield f"data: {json.dumps({'type': 'error', 'error': '会话超时'})}\n\n"
                         break
 
@@ -172,6 +222,10 @@ def setup_live_edit(
                 # If client disconnects, cancel the backend task
                 if not session._done:
                     session.cancel()
+                    audit_log.record(
+                        "session_disconnect", target=session_id, session_id=session_id,
+                        result="cancelled",
+                    )
                 if not task.done():
                     with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(task, timeout=30.0)
@@ -200,11 +254,20 @@ def setup_live_edit(
             session = rehydrate_session(session_id, detail) if detail else None
             if session is None:
                 raise HTTPException(status_code=404, detail="会话不存在或已过期")
+            audit_log.record(
+                "session_recovered", target=session_id, session_id=session_id,
+                result="recovered",
+            )
             if not session_store.add(session):
                 raise HTTPException(status_code=503, detail="会话数已达上限，请稍后再试")
 
         session.new_stream_queue()
         mode = req.mode or session._mode
+        audit_log.record(
+            "session_continue", target=session_id, session_id=session_id,
+            detail={"mode": mode},
+        )
+        set_session_id(session_id)
 
         async def event_generator() -> AsyncIterator[str]:
             task = asyncio.ensure_future(
@@ -219,6 +282,8 @@ def setup_live_edit(
                     preview_manager=preview_manager,
                     session_store=session_store,
                     tool_registry=tool_registry,
+                    audit_log=audit_log,
+                    metrics=metrics,
                 )
             )
 
@@ -262,6 +327,14 @@ def setup_live_edit(
         if session is None:
             raise HTTPException(status_code=404, detail="会话不存在或已过期")
         session.approve(tool_id, req.approved)
+        decision = "approved" if req.approved else "rejected"
+        audit_log.record(
+            "approve" if req.approved else "reject",
+            target=tool_id,
+            session_id=session_id,
+            result=decision,
+        )
+        metrics.inc("live_edit_approvals_total", {"decision": decision})
         return {"ok": True}
 
     # ── POST /live-edit/cancel/{session_id} ──
@@ -274,6 +347,8 @@ def setup_live_edit(
             raise HTTPException(status_code=404, detail="会话不存在或已过期")
         session.cancel()
         logger.info("Session %s cancelled by user", session_id)
+        audit_log.record("cancel", target=session_id, session_id=session_id, result="cancelled")
+        metrics.inc("live_edit_sessions_total", {"outcome": "cancelled"})
         return {"ok": True}
 
     # ── GET /live-edit/timeline ──
@@ -353,6 +428,19 @@ def setup_live_edit(
     async def revert_preview(commit_hash: str):
         """Dry-run revert to check for conflicts."""
         preview = vcs.revert_preview(commit_hash)
+        if not preview.ok:
+            result = "error"
+        elif preview.conflicts or not preview.can_revert:
+            result = "conflict"
+        else:
+            result = "ok"
+        audit_log.record(
+            "revert_preview",
+            target=commit_hash,
+            session_id="",
+            result=result,
+            detail={"message": preview.error or ""},
+        )
         return {
             "ok": preview.ok,
             "can_revert": preview.can_revert,
@@ -368,6 +456,14 @@ def setup_live_edit(
     async def revert_execute(commit_hash: str):
         """Execute revert and run post_revert hook if configured."""
         result = vcs.revert_execute(commit_hash)
+        audit_log.record(
+            "revert_execute",
+            target=commit_hash,
+            session_id="",
+            result="ok" if result.ok else "error",
+            detail={"message": getattr(result, "message", "")},
+        )
+        metrics.inc("live_edit_reverts_total", {"outcome": "ok" if result.ok else "error"})
         if result.ok and hasattr(config.hooks, "post_revert") and config.hooks.post_revert:
             import subprocess
 
@@ -413,6 +509,41 @@ def setup_live_edit(
             "active_sessions": session_store.count,
         }
 
+    # ── GET /live-edit/metrics ──
+
+    @router.get("/metrics")
+    async def metrics_endpoint():
+        """Prometheus text metrics. Gate at the reverse proxy for production."""
+        return Response(content=metrics.render(), media_type="text/plain")
+
+    # ── GET /live-edit/admin/audit ──
+
+    @router.get("/admin/audit")
+    async def admin_audit(
+        action: str = Query(default=""),
+        actor: str = Query(default=""),
+        session_id: str = Query(default=""),
+        limit: int = Query(default=100, le=1000),
+        after: str = Query(default=""),
+        before: str = Query(default=""),
+        x_admin_key: str = Header("", alias="X-Admin-Key"),
+    ):
+        """Query the append-only audit trail. Requires X-Admin-Key."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_audit", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        events = audit_log.query(
+            action=action or None,
+            actor=actor or None,
+            session_id=session_id or None,
+            limit=limit,
+            after=after or None,
+            before=before or None,
+        )
+        return {"events": [e.to_dict() for e in events]}
+
     # ── Knowledge base endpoints ──
 
     @router.post("/knowledge")
@@ -436,8 +567,15 @@ def setup_live_edit(
         try:
             mem_mgr.add_knowledge(body.source_path, body.content, meta)
         except Exception as e:
+            audit_log.record(
+                "knowledge_upload",
+                target=body.source_path,
+                result="error",
+                detail={"message": str(e)},
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+        audit_log.record("knowledge_upload", target=body.source_path, result="ok")
         return {"ok": True, "source_path": body.source_path}
 
     @router.delete("/knowledge/{source_path:path}")
@@ -450,10 +588,23 @@ def setup_live_edit(
         try:
             mem_mgr.delete_knowledge(source_path)
         except ValueError as e:
+            audit_log.record(
+                "knowledge_delete",
+                target=source_path,
+                result="error",
+                detail={"message": str(e)},
+            )
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
+            audit_log.record(
+                "knowledge_delete",
+                target=source_path,
+                result="error",
+                detail={"message": str(e)},
+            )
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+        audit_log.record("knowledge_delete", target=source_path, result="ok")
         return {"ok": True}
 
     @router.get("/knowledge")
@@ -593,6 +744,9 @@ def setup_live_edit(
         """List active live-edit worktrees with preview URLs, modified files,
         conflict detection, and system overview. Requires X-Admin-Key header."""
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_worktrees", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
             import subprocess as _sp
@@ -686,11 +840,15 @@ def setup_live_edit(
     ):
         """Force-cancel an active session from admin. Requires X-Admin-Key header."""
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_cancel", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
             session = session_store.get(session_id)
             if session:
                 session.cancel()
+                audit_log.record("admin_cancel", target=session_id, result="ok")
                 return {"ok": True, "message": f"已取消会话: {session_id}"}
             else:
                 return {"ok": False, "message": f"会话不存在或已过期: {session_id}"}
@@ -705,6 +863,9 @@ def setup_live_edit(
     ):
         """Force-remove an orphaned live-edit worktree. Requires X-Admin-Key header."""
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_cleanup", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
             # Try to remove from session store first
@@ -717,6 +878,7 @@ def setup_live_edit(
             for wt in wts:
                 if wt.get("session_id") == session_id:
                     vcs.discard_session_branch(session_id, worktree_path=wt["path"])
+                    audit_log.record("admin_cleanup", target=session_id, result="ok")
                     return {"ok": True, "message": f"已清理 worktree: {session_id}"}
             return {"ok": False, "message": f"未找到 worktree: {session_id}"}
         except Exception as e:
@@ -727,6 +889,9 @@ def setup_live_edit(
     async def admin_list_unmerged_branches(x_admin_key: str = Header("", alias="X-Admin-Key")):
         """List live-edit branches not yet merged into main. Requires X-Admin-Key."""
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_list_branches", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
             raw = vcs.list_unmerged_branches()
@@ -754,6 +919,9 @@ def setup_live_edit(
         and keeps the branch for manual resolution.
         """
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_merge", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         branch = f"live-edit/{session_id}"
         try:
@@ -779,6 +947,7 @@ def setup_live_edit(
 
             msg = f"live-edit: merge {branch}"
             merge_hash = vcs.merge_commit(tip, msg)
+            audit_log.record("admin_merge", target=session_id, result="ok")
             await preview_manager.stop(session_id)
             # Branch merged — safe to delete
             try:
@@ -792,6 +961,9 @@ def setup_live_edit(
             # Merge conflict
             with contextlib.suppress(Exception):
                 vcs.abort_merge()
+            audit_log.record(
+                "admin_merge", target=session_id, result="conflict", detail={"message": str(e)}
+            )
             logger.warning("merge conflict for %s: %s", session_id, e)
             return JSONResponse(
                 status_code=409,
@@ -808,6 +980,9 @@ def setup_live_edit(
         """Delete live-edit/<session_id> branch and any leftover worktree.
         Requires X-Admin-Key."""
         if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="admin_delete", result="blocked"
+            )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         try:
             await preview_manager.stop(session_id)
@@ -818,6 +993,7 @@ def setup_live_edit(
                     storage.remove(session_id)
             except Exception as _e:
                 logger.warning("storage remove for %s failed: %s", session_id, _e)
+            audit_log.record("admin_delete", target=session_id, result="ok")
             return {"ok": True}
         except Exception as e:
             logger.error("admin_delete_branch error: %s", e)
