@@ -305,6 +305,10 @@ def setup_live_edit(
             finally:
                 if not session._done:
                     session.cancel()
+                    audit_log.record(
+                        "session_disconnect", target=session_id, session_id=session_id,
+                        result="cancelled",
+                    )
                 if not task.done():
                     with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(task, timeout=30.0)
@@ -351,7 +355,6 @@ def setup_live_edit(
         session.cancel()
         logger.info("Session %s cancelled by user", session_id)
         audit_log.record("cancel", target=session_id, session_id=session_id, result="cancelled")
-        metrics.inc("live_edit_sessions_total", {"outcome": "cancelled"})
         return {"ok": True}
 
     # ── GET /live-edit/timeline ──

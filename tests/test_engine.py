@@ -815,6 +815,80 @@ class TestRunEditSessionAuditMetrics:
         rendered = metrics.render()
         assert 'live_edit_sessions_total{outcome="failed"} 1' in rendered
         assert 'live_edit_llm_calls_total{status="error"} 1' in rendered
+        assert 'live_edit_errors_total{error_type="RuntimeError"} 1' in rendered
+
+    @pytest.mark.asyncio
+    async def test_approval_timeout_records_audit_and_metric(self, tmp_path):
+        """A per-tool approval timeout records approve/timeout audit + metric."""
+        import tempfile
+        from types import SimpleNamespace
+
+        from live_edit.audit import SQLiteAuditLog
+        from live_edit.metrics import Metrics
+
+        audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+        metrics = Metrics()
+
+        write_def = SimpleNamespace(is_write=True, require_approval=False)
+
+        class FakeToolRegistry:
+            def get_tools(self, mode):
+                return ["write_file"]
+
+            def get_tool(self, name):
+                return write_def
+
+            async def execute(self, name, args, root, config):
+                return {"ok": True}
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "write_file",
+                        "id": "t1",
+                        "input": {"path": "a.py", "content": "x"},
+                    }
+                ],
+                [{"type": "text", "text": "done"}],
+            ]
+        )
+
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = tempfile.mkdtemp()
+        mock_storage = MagicMock()
+
+        config = _make_test_config()
+
+        session = EditSession("s1", "Add a file")
+        session.wait_for_approval = AsyncMock(
+            return_value={"approved": False, "reason": "用户超时未响应"}
+        )
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
+            session_store=store,
+            tool_registry=FakeToolRegistry(),
+            audit_log=audit,
+            metrics=metrics,
+        )
+
+        events = audit.query(action="approve")
+        assert len(events) == 1
+        assert events[0].result == "timeout"
+        assert events[0].target == "t1"
+        assert events[0].session_id == "s1"
+
+        rendered = metrics.render()
+        assert 'live_edit_approvals_total{decision="timeout"} 1' in rendered
 
     @pytest.mark.asyncio
     async def test_fix_loop_records_tool_audit_and_metrics(self, tmp_path):

@@ -868,6 +868,17 @@ async def run_edit_session(
                         },
                     )
                     if not result.get("approved"):
+                        if result.get("reason") == "用户超时未响应":
+                            if audit_log is not None:
+                                audit_log.record(
+                                    "approve",
+                                    target=tool_id,
+                                    session_id=session.id,
+                                    result="timeout",
+                                    detail={"reason": "用户超时未响应"},
+                                )
+                            if metrics is not None:
+                                metrics.inc("live_edit_approvals_total", {"decision": "timeout"})
                         tool_results.append(
                             {
                                 "type": "tool_result",
@@ -1189,6 +1200,8 @@ async def run_edit_session(
         session._outcome = "failed"
         logger.error("Session %s error: %s\n%s", session.id, e, traceback.format_exc())
         session.emit("error", error=str(e))
+        if metrics is not None:
+            metrics.inc("live_edit_errors_total", {"error_type": type(e).__name__})
 
     finally:
         session._done = True

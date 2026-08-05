@@ -1,7 +1,10 @@
 # tests/test_logging.py
+import asyncio
 import io
 import json
 import logging
+
+import pytest
 
 from live_edit.logging import (
     JsonFormatter,
@@ -71,3 +74,40 @@ def test_configure_logging_targets_live_edit_namespace_only():
         h is le_logger.handlers[0] for h in logging.getLogger().handlers
     )
     assert not root_has_le_handler
+
+
+@pytest.mark.asyncio
+async def test_session_id_propagates_into_background_task():
+    set_session_id("le_bg")
+
+    async def read():
+        return get_session_id()
+
+    task = asyncio.create_task(read())
+    assert await task == "le_bg"
+    set_session_id("")
+    set_correlation_id("")
+
+
+@pytest.mark.asyncio
+async def test_contextvars_isolated_across_concurrent_tasks():
+    set_session_id("le_a")
+    set_correlation_id("req_a")
+
+    async def read_a():
+        return get_session_id(), get_correlation_id()
+
+    ta = asyncio.create_task(read_a())
+
+    set_session_id("le_b")
+    set_correlation_id("req_b")
+
+    async def read_b():
+        return get_session_id(), get_correlation_id()
+
+    tb = asyncio.create_task(read_b())
+
+    assert await ta == ("le_a", "req_a")
+    assert await tb == ("le_b", "req_b")
+    set_session_id("")
+    set_correlation_id("")
