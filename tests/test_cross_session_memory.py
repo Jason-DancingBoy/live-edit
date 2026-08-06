@@ -203,3 +203,132 @@ class TestTopicFakeEmbedder:
 
     def test_deterministic(self, embedder):
         assert embedder.embed("add JWT auth") == embedder.embed("add JWT auth")
+
+
+class TestCrossUserRecall:
+    async def test_b_retrieves_a_similar_edit(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        results = ltm.retrieve_sync("add jwt authentication to the login flow")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert any(e.file_path for e in results)  # a file_diff chunk surfaced
+
+    async def test_unrelated_query_returns_empty(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        assert ltm.retrieve_sync("unrelated task with no topic keyword") == []
+
+    async def test_same_topic_a_and_b_both_surface(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        await ltm.store(
+            "user_b:222",
+            "refactor JWT auth to use refresh tokens",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-b",
+        )
+        sids = {e.session_id for e in ltm.retrieve_sync("add jwt authentication")}
+        assert any(s.startswith("user_a:") for s in sids)
+        assert any(s.startswith("user_b:") for s in sids)
+
+
+class TestCrossUserTopicFiltering:
+    async def test_b_recalls_only_relevant_topic(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        await ltm.store(
+            "user_b:222",
+            "add dark mode theme to the UI",
+            ["src/styles/theme.css"],
+            STYLE_DIFF,
+            "h-b",
+        )
+        results = ltm.retrieve_sync("jwt token auth login")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert not any(e.session_id.startswith("user_b:") for e in results)
+
+
+class TestContinuation:
+    async def test_restore_replaces_chunks(self, ltm, storage):
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        count1 = len(storage.query_chunks())
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
+        )
+        count2 = len(storage.query_chunks())
+        assert count1 == 2  # 1 request + 1 file_diff
+        assert count2 == 2  # replaced, not duplicated
+
+    async def test_continuation_recalls_own_history(self, ltm):
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
+        )
+        results = ltm.retrieve_sync("add jwt auth")
+        assert any(e.session_id.startswith("user_a:") for e in results)
+
+
+class TestStoreBehavior:
+    async def test_two_file_diff_chunks(self, ltm, storage):
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        rows = storage.query_chunks()
+        assert {c[3] for c in rows} == {"request", "file_diff"}
+        assert sum(1 for c in rows if c[3] == "file_diff") == 2
+        assert sum(1 for c in rows if c[3] == "request") == 1
+
+    async def test_empty_diff_request_only(self, ltm, storage):
+        await ltm.store("s1", "implement JWT token auth", ["src/auth.py"], "", "h1")
+        rows = storage.query_chunks()
+        assert len(rows) == 1
+        assert rows[0][3] == "request"
+
+    async def test_binary_diff_request_only(self, ltm, storage):
+        await ltm.store("s1", "implement JWT token auth", [], BINARY_DIFF, "h1")
+        rows = storage.query_chunks()
+        assert len(rows) == 1
+        assert rows[0][3] == "request"
+
+
+class TestDisabledSwitch:
+    def test_master_switch_noop(self, storage, embedder):
+        cfg = MemoryConfig(enabled=False)
+        mgr = MemoryManager(storage, embedder, cfg)
+        mgr.store_sync("s1", "implement JWT auth", ["src/auth.py"], AUTH_DIFF, "h1")
+        assert storage.query_chunks() == []
+        msgs = [{"role": "user", "content": "add jwt auth"}]
+        context, updated = mgr.retrieve_sync("add jwt auth", "s1", msgs, 1)
+        assert context == ""
+        assert updated is msgs
