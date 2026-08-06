@@ -217,6 +217,49 @@ class TestApproveEndpoint:
         assert response.status_code == 404
 
 
+class TestBatchApprove:
+    def test_batch_approve_missing_session(self, client):
+        """POST batch approve on a nonexistent session returns 404."""
+        response = client.post(
+            "/live-edit/approve/nonexistent/batch", json={"enabled": True}
+        )
+        assert response.status_code == 404
+
+    def test_batch_approve_enables_auto_approve(self, tmp_path):
+        """Batch approve toggles auto-approve on the target session."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from live_edit.engine import EditSession, SessionStore
+        from live_edit.router import setup_live_edit
+
+        config_path = _write_router_config(tmp_path)
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        session = EditSession("s1", "Edit")
+        store.add(session)
+
+        router = setup_live_edit(
+            project_root=str(tmp_path),
+            config_path=str(config_path),
+            provider=FakeProvider(),
+            storage=MagicMock(),
+            vcs=MagicMock(),
+            session_store=store,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post("/live-edit/approve/s1/batch", json={"enabled": True})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "enabled": True}
+        assert session._auto_approve is True
+
+        response = client.post("/live-edit/approve/s1/batch", json={"enabled": False})
+        assert response.json() == {"ok": True, "enabled": False}
+        assert session._auto_approve is False
+
+
 class TestStreamEndpoint:
     def test_stream_starts_session(self, client):
         """POST /live-edit/stream returns SSE events."""

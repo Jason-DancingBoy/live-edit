@@ -172,6 +172,28 @@ class TestEditSession:
         assert result["approved"] is False
         assert "超时" in result.get("reason", "")
 
+    def test_auto_approve_off_by_default(self):
+        session = EditSession("s1", "Test")
+        assert session._auto_approve is False
+
+    async def test_wait_for_approval_auto_approve_returns_immediately(self):
+        session = EditSession("s1", "Auto")
+        session.set_auto_approve(True)
+        result = await session.wait_for_approval("t1", {"tool": "edit_file", "summary": "s"})
+        assert result == {"approved": True, "auto": True}
+        # The plan event is still emitted so the UI shows what auto-ran.
+        event = session.queue.get_nowait()
+        assert event["type"] == "tool_plan"
+        assert event["id"] == "t1"
+        assert event["auto"] is True
+
+    async def test_auto_approve_does_not_emit_approval_wait(self):
+        session = EditSession("s1", "Auto")
+        session.set_auto_approve(True)
+        # Must not block: if it waited, this await would hang the test until timeout.
+        result = await session.wait_for_approval("t1", {"tool": "edit_file"}, timeout=0.1)
+        assert result["approved"] is True
+
 
 # ── SessionStore ──
 
@@ -562,6 +584,81 @@ class TestRunEditSession:
         tool_plans = [e for e in events if e["type"] == "tool_plan"]
         assert len(tool_plans) == 1
         assert tool_plans[0].get("auto") is True
+
+    @pytest.mark.asyncio
+    async def test_quick_mode_tool_plan_includes_preview_diff(self):
+        """quick-mode write approval receives a preview_diff for edit_file."""
+        import tempfile
+        from types import SimpleNamespace
+
+        edit_root = tempfile.mkdtemp()
+        fpath = os.path.join(edit_root, "edit_me.py")
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write("old\n")
+
+        write_def = SimpleNamespace(is_write=True, require_approval=False)
+
+        class FakeToolRegistry:
+            def get_tools(self, mode):
+                return ["edit_file"]
+
+            def get_tool(self, name):
+                return write_def
+
+            async def execute(self, name, args, root, config):
+                return {"ok": True}
+
+        provider = FakeProvider(
+            [
+                [
+                    {
+                        "type": "tool_use",
+                        "name": "edit_file",
+                        "id": "t1",
+                        "input": {
+                            "path": "edit_me.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                    }
+                ],
+                [{"type": "text", "text": "done"}],
+            ]
+        )
+
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = edit_root
+        mock_storage = MagicMock()
+
+        config = _make_test_config()
+        config.project.root = edit_root
+
+        session = EditSession("s1", "Edit")
+        captured = {}
+
+        async def fake_wait(tool_id, tool_data, timeout=300.0):
+            captured["data"] = tool_data
+            return {"approved": True}
+
+        session.wait_for_approval = fake_wait  # type: ignore[method-assign]
+
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
+            session_store=store,
+            tool_registry=FakeToolRegistry(),
+        )
+
+        assert "preview_diff" in captured["data"]
+        assert "-old" in captured["data"]["preview_diff"]
+        assert "+new" in captured["data"]["preview_diff"]
 
     def test_session_store_ttl_expiry(self):
         """Sessions expire after TTL."""
