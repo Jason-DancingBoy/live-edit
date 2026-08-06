@@ -1658,8 +1658,213 @@ git commit -m "feat(deploy): Dockerfile, compose, and entrypoint for standalone 
 
 ---
 
+### Task 8: greenfield 引导 — 检测 + 编辑器引导卡片
+
+**Files:**
+- Modify: `live_edit/server.py` (add `detect_greenfield` + `GET /api/workspace`)
+- Modify: `live_edit/static/host/editor.html` (引导卡片)
+- Test: `tests/test_server_greenfield.py`
+
+**Consumes:** Task 2 `create_app`, `_current_user`, `project_root`, `config_path`; Task 4 `editor.html`; the seed-repo state produced by Task 7's entrypoint (git init + README commit + untracked `.live-edit.toml`).
+
+**Produces:**
+- `detect_greenfield(project_root: str) -> bool`
+- `GET /api/workspace` → 401 未登录，否则 `{"greenfield": bool, "project_name": str}`
+
+> Spec §8: from-0 scaffolding is developer-led (deep mode, which already has `tools="all"`). This task only surfaces the workflow to the UI — it does NOT change quick-mode permissions or touch `config.py`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_server_greenfield.py`:
+
+```python
+"""Tests for greenfield detection and the /api/workspace endpoint."""
+
+import subprocess
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from test_router import FakeProvider, _write_router_config
+
+
+def _seed_repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "README.md").write_text("# repo\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+
+class TestDetectGreenfield:
+    def test_seed_only_is_greenfield(self, tmp_path):
+        from live_edit.server import detect_greenfield
+
+        _seed_repo(tmp_path)
+        (tmp_path / ".live-edit.toml").write_text("[project]\nname='x'\n")
+        assert detect_greenfield(str(tmp_path)) is True
+
+    def test_with_source_file_not_greenfield(self, tmp_path):
+        from live_edit.server import detect_greenfield
+
+        _seed_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print('hi')\n")
+        subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add app"], cwd=str(tmp_path), capture_output=True)
+        assert detect_greenfield(str(tmp_path)) is False
+
+    def test_not_a_repo_is_not_greenfield(self, tmp_path):
+        from live_edit.server import detect_greenfield
+
+        assert detect_greenfield(str(tmp_path)) is False
+
+
+@pytest.fixture
+def server_app(tmp_path):
+    from live_edit.server import create_app
+
+    config_path = _write_router_config(tmp_path)
+    _seed_repo(tmp_path)  # git repo, only a README committed → greenfield
+    app = create_app(
+        project_root=str(tmp_path),
+        config_path=str(config_path),
+        auth_db_path=str(tmp_path / "live_edit_app.db"),
+        admin_user="admin",
+        admin_password="adminpass",
+        admin_key="admin-secret",
+        provider=FakeProvider(),
+        storage=MagicMock(),
+        vcs=MagicMock(),
+    )
+    return app
+
+
+class TestApiWorkspace:
+    def test_requires_login(self, server_app):
+        resp = TestClient(server_app).get("/api/workspace")
+        assert resp.status_code == 401
+
+    def test_reports_greenfield(self, server_app):
+        client = TestClient(server_app)
+        client.post("/login", json={"username": "admin", "password": "adminpass"})
+        resp = client.get("/api/workspace")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["greenfield"] is True
+        assert data["project_name"]
+
+
+class TestEditorGreenfieldCard:
+    def test_editor_has_greenfield_card(self, server_app):
+        client = TestClient(server_app)
+        client.post("/login", json={"username": "admin", "password": "adminpass"})
+        resp = client.get("/editor")
+        assert resp.status_code == 200
+        assert "le-greenfield-card" in resp.text
+        assert "深度开发" in resp.text
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/test_server_greenfield.py -v`
+Expected: FAIL — `ImportError`/`AttributeError` (`detect_greenfield` undefined, `/api/workspace` 404, card markup missing from `editor.html`).
+
+- [ ] **Step 3: Write the implementation**
+
+In `live_edit/server.py`, add at module top (after imports):
+
+```python
+import subprocess as _subprocess
+
+GREENFIELD_SEED_FILES = {"README.md", "README", ".live-edit.toml"}
+
+
+def detect_greenfield(project_root: str) -> bool:
+    """True when the repo holds only seed files (README + config) — nothing built yet."""
+    try:
+        out = _subprocess.run(
+            ["git", "ls-files"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode != 0:
+            return False
+        tracked = {line.strip() for line in out.stdout.splitlines() if line.strip()}
+        return len(tracked - GREENFIELD_SEED_FILES) == 0
+    except Exception:
+        return False
+```
+
+In `create_app`, add `GET /api/workspace` just before `app.include_router(router)`:
+
+```python
+    @app.get("/api/workspace")
+    async def workspace(request: Request):
+        user = _current_user(request, sessions, user_store)
+        if user is None:
+            return JSONResponse({"detail": "未登录"}, status_code=401)
+        project_name = ""
+        try:
+            from .config import parse_config
+
+            resolved = (
+                os.path.join(project_root, config_path)
+                if not os.path.isabs(config_path)
+                else config_path
+            )
+            project_name = parse_config(resolved).project.name
+        except Exception:
+            pass
+        return {"greenfield": detect_greenfield(project_root), "project_name": project_name}
+```
+
+In `live_edit/static/host/editor.html`, add the onboarding card right after the `<div id="le-host-body"></div>` line:
+
+```html
+  <div id="le-greenfield-card" style="display:none;max-width:640px;margin:24px auto;padding:20px;background:#fff7e6;border:1px solid #f0c36d;border-radius:8px;font-family:system-ui,sans-serif">
+    <h3>项目还是空的 — 从 0 共建</h3>
+    <p>这个仓库还没有源码。协作模型：</p>
+    <ol>
+      <li>开发者用 <b>深度开发</b> 模式发一条脚手架会话（例：<i>"帮我从0搭建一个 FastAPI 项目骨架"</i>）——只有深度模式能执行命令。</li>
+      <li>骨架提交后，业务用户用 <b>快速修改</b> 模式在功能上加需求。</li>
+      <li>管理员在管理后台合并把关；预览命令 <code>[preview].command</code> 在骨架成形后由管理员配置。</li>
+    </ol>
+  </div>
+```
+
+And in the same file, extend the existing `fetch("/api/me")` script block (append a second fetch):
+
+```html
+    fetch("/api/workspace")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((w) => {
+        if (w && w.greenfield) {
+          document.getElementById("le-greenfield-card").style.display = "block";
+        }
+      });
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_server_greenfield.py -v`
+Expected: PASS. Also run the full standalone suite to confirm no regression:
+`pytest tests/test_server_auth.py tests/test_server_admin.py tests/test_server_pages.py tests/test_server_admin_pages.py tests/test_server_greenfield.py -v`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add live_edit/server.py live_edit/static/host/editor.html tests/test_server_greenfield.py
+git commit -m "feat(ui): greenfield detection + editor onboarding card for from-0 collaboration"
+```
+
+---
+
 ## Self-Review Notes
 
-- **Spec coverage:** §1 shell (`server.py` + mount router) → Task 2; §2 auth (users/roles/sessions/`admin_key` exemption) → Tasks 1–3; §3 host pages + frontend auto-open → Tasks 4–5; §4 data flow (login→edit→admin merge) → Tasks 2–5; §5 error handling (401/403/redirects) → Tasks 2–5; §6 tests → every task; §7 Docker → Task 7; §8 out-of-scope items are intentionally absent.
+- **Spec coverage:** §1 shell (`server.py` + mount router) → Task 2; §2 auth (users/roles/sessions/`admin_key` exemption) → Tasks 1–3; §3 host pages + frontend auto-open → Tasks 4–5; §4 data flow (login→edit→admin merge) → Tasks 2–5; §5 error handling (401/403/redirects) → Tasks 2–5; §6 tests → every task; §7 Docker → Task 7; §8 greenfield from-0 collaboration → Task 8; §9 out-of-scope items are intentionally absent.
 - **Placeholders:** none — every task has real test code and real implementation code.
 - **Type consistency:** `User`, `UserStore.*`, `SessionManager.get_user(token, user_store)`, `create_app(...)` signature, `COOKIE_NAME`, `_current_user`, `cmd_serve(root, host, port, config_path)`, `cmd_create_user(root, username, password, role, db)` are the same names/signatures everywhere they appear.

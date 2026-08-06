@@ -132,7 +132,22 @@ def create_app(project_root=".", config_path=".live-edit.toml", ...) -> FastAPI:
 - **docker-compose.yml**：业务仓库挂载到 `/workspace`、LLM API key 环境变量、admin 引导变量、端口映射。
 - **入口脚本**：启动时校验挂载卷是 git 仓库、缺配置则 `live-edit init`、引导 admin。
 
-## 8. 明确不做（v1 之外）
+## 8. 从 0 共建完整项目（greenfield 引导）
+
+**定位**：从 0 搭建由开发者主导（deep 模式，含 `run_shell`）；业务用户在骨架搭好后用 quick 模式共建功能。quick 模式保持不动（`approve_for` 仍只含 `edit_file`/`write_file`），业务用户不直接跑 shell。
+
+**Greenfield 检测**：`detect_greenfield(project_root) -> bool` —— 仓库存在且 git 跟踪文件除种子文件（`README.md`、`.live-edit.toml`）外为空时视为从 0 状态。基于 git 实时判断，项目一旦有源码提交即自动退出 greenfield。
+
+**数据来源**：`GET /api/workspace`（需登录）→ `{"greenfield": bool, "project_name": str}`，供引导卡片使用。
+
+**引导卡片（editor.html）**：greenfield 时编辑器页顶部显示引导卡片，说明协作模型：
+1. 开发者用 **deep 模式**发一条脚手架会话（如"帮我从 0 搭建一个 FastAPI 项目骨架"）——只有 deep 模式能跑 shell。
+2. 骨架提交后，业务用户用 **quick 模式**在会话分支上加功能。
+3. admin 在管理后台合并把关；预览命令 `[preview].command` 在骨架成形后由 admin 配置。
+
+**多用户共建**：沿用 worktree 隔离 + 跨会话冲突检测（engine 已有）。建议同一骨架由单一 deep 会话搭建，避免多个会话并发脚手架相互覆盖。
+
+## 9. 明确不做（v1 之外）
 
 - 自助注册 / 找回密码
 - 完整用户管理 UI（只要建 + 列）
