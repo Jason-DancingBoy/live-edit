@@ -385,7 +385,7 @@ class TestScoring:
         ltm = self._ltm(storage, embedder, max_entries=2)
         for i in range(3):
             await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
-        assert len(ltm.retrieve_sync("add jwt auth")) <= 2
+        assert len(ltm.retrieve_sync("add jwt auth")) == 2
 
     async def test_per_session_top_two(self, storage, embedder):
         ltm = self._ltm(storage, embedder)
@@ -397,7 +397,7 @@ class TestScoring:
             "h1",
         )
         s1 = [e for e in ltm.retrieve_sync("add jwt auth") if e.session_id == "s1"]
-        assert len(s1) <= 2
+        assert len(s1) == 2
 
     async def test_file_diff_retained_over_request(self, storage, embedder):
         ltm = self._ltm(storage, embedder)
@@ -419,7 +419,7 @@ class TestContextFormatting:
             enabled=True,
             similarity_threshold=0.6,
             recency_decay_rate=0.0,
-            hit_count_weight=0.0,
+            hit_count_weight=0.05,
             max_entries=5,
         )
         cfg = MemoryConfig(
@@ -438,6 +438,9 @@ class TestContextFormatting:
             AUTH_DIFF,
             "h1",
         )
+        conn = storage._get_conn()
+        conn.execute("UPDATE session_chunks SET hit_count = 50 WHERE session_id = 'user_a:111'")
+        conn.commit()
         msgs = [{"role": "user", "content": "add jwt auth"}]
         context, _ = mgr.retrieve_sync("add jwt auth", "user_b:222", msgs, round_num=1)
         assert "## Relevant Past Changes" in context
@@ -445,6 +448,7 @@ class TestContextFormatting:
         assert "implement JWT token auth" in context
         pcts = [int(m) for m in re.findall(r"\((\d+)%\)", context)]
         assert pcts and all(p <= 100 for p in pcts)  # score clamped <= 100%
+        assert "100%" in context  # hit bonus pushed score above 1.0; clamp shows 100%, not 150%
 
 
 class TestEviction:
