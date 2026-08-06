@@ -1,0 +1,97 @@
+# Cross-Session Memory Functional Tests Design
+
+**Date**: 2026-08-06
+**Status**: draft
+**Scope**: a focused functional/integration test suite for the L2 long-term (cross-session / cross-user) memory feature
+**Route**: new single test file `tests/test_cross_session_memory.py` (Approach A) — real `SQLiteStorage` on `tmp_path`, semantically discriminative topic-based fake embedder, explicit user A/B session namespaces
+
+## Overview
+
+live-edit's three-tier memory (memory.py) stores each edit session's request + per-file diffs as embedding chunks in a single project-local SQLite DB (`live_edit.db`). L2 retrieval (`LongTermMemory.retrieve_sync`, memory.py:392) searches **all** chunks in the DB with no session/user filter, then groups results by session. The intended effect — and the contract this suite locks in — is that a new session (even from a different user) automatically surfaces semantically similar past edits, without the requester explicitly referencing them.
+
+The existing tests cover this only weakly:
+
+- `tests/test_long_term.py` uses a **constant-vector FakeEmbedder** (memory.py test doubles, test_long_term.py:17-28) where cosine similarity between any two texts is exactly 1.0 — it cannot distinguish a relevant past edit from an unrelated one, so "semantic recall" is never really exercised.
+- Most suites use in-memory `FakeStorage`, so real persistence, vec-index vs brute-force fallback, migration, and eviction are untested at the integration level.
+- No test explicitly models the "user B automatically borrows user A" scenario the feature is meant to deliver.
+
+This spec adds one new functional test file that closes those gaps.
+
+## Non-Goals
+
+- No engine/HTTP end-to-end tests (no `engine.run_edit_session`, no router/TestClient).
+- No coverage of the legacy `session_memory.SessionMemory` class (kept for backward compat; the current engine path is `MemoryManager → LongTermMemory`).
+- No real-model (sentence-transformers) download in CI. Real-model eval stays a manual opt-in (`tests/test_rag_eval.py::run_real_eval`).
+- No production code changes. This is a test-only addition.
+
+## Architecture
+
+```
+tests/test_cross_session_memory.py   (new)
+├── TopicFakeEmbedder                 semantically discriminative, deterministic
+├── fixtures                          storage(tmp_path), topic_embedder, ltm(config)
+└── 9 test groups / ~30+ cases
+```
+
+### TopicFakeEmbedder (test-local asset)
+
+Deterministic embeddings that let cosine similarity actually separate "similar" from "unrelated", fixing the constant-vector weakness:
+
+- A fixed set of topics, each mapped to an orthogonal basis direction vector (dimension configurable, default 8):
+  `auth, bugfix, db, style, docs, ratelimit` (mirroring the topic set in `tests/test_rag_eval.py`).
+- `embed(text)`: classify text by keyword matches into a topic → return that topic's direction vector, with a small per-text deterministic perturbation (seeded by text hash) so different texts on the same topic still have cosine slightly < 1.0.
+- Text with no topic keyword maps to a distinct "other" vector orthogonal to all topics → retrieves nothing against real topics.
+- `embed_batch` delegates to `embed`; `dimension` returns the configured dim.
+
+Guarantees: same input → same vector (hash-seeded); same topic → high cosine (~0.9+); different topics → cosine ≈ 0; `other` → cosine ≈ 0 vs any topic.
+
+### Storage fixture
+
+- `storage(tmp_path)`: real `SQLiteStorage` at `tmp_path / "test_cross_session.db"`.
+- Exercises real table creation, `session_chunks` persistence, vec sync (`session_chunks_vec`) when sqlite-vec is installed, and automatic brute-force fallback when it is not. **Every assertion must hold under both paths** (e.g. do not assert row counts that differ between vec and brute-force paths).
+
+### User A / B simulation
+
+- Session IDs use distinct namespaces: `user_a:<uuid-hex>` / `user_b:<uuid-hex>`.
+- The suite proves B's retrieval returns A's chunks — i.e. the current no-user-scoping contract — and that retrieval is cross-session by design.
+
+### Configuration
+
+- Tests build `LongTermConfig` explicitly per scenario (threshold / decay / hit-weight / max-entries). No dependence on config-file loading.
+- `memory.enabled=False` case uses `MemoryConfig(enabled=False)` through `MemoryManager` to verify the master switch.
+
+## Test Matrix
+
+| # | Group | Validates | Key assertions |
+|---|-------|-----------|----------------|
+| 1 | Main path (cross-user recall) | B's new session auto-recalls A's similar edit, without explicit reference | retrieved `session_id` starts with `user_a`; differently-worded query sharing a topic keyword (e.g. A stored "implement token-based auth for login", B queries "add JWT authentication" — both hit the `auth` topic) still hits; unrelated query → empty |
+| 2 | Cross-user visibility & topic filtering | A and B store different topics in one DB; B's query recalls only relevant topic, across users | no wrong-topic entries in results; relevant topic present |
+| 3 | Scoring behavior | threshold boundary; recency decay lowers old scores; hit-count bonus + 10 cap; `max_entries` truncation; per-session top-2 grouping; `file_diff` ranked above `request` | below-threshold not recalled; old chunk score significantly lower; hit bonus within cap; per-session ≤2; file_diff first |
+| 4 | Continuation semantics | re-store same session atomically replaces old chunks (no duplication); continuation recalls its own history | chunk count unchanged after re-store; own session retrievable |
+| 5 | Store behavior | 1 request chunk + N file_diff chunks per modified file; empty diff → request-only; binary diff skipped | chunk_type counts exact |
+| 6 | Context formatting | `_format_memory_context` fields, "reference only" disclaimer, score clamped ≤100% | output contains disclaimer + fields; percent ≤ 100% |
+| 7 | Eviction | `max_stored_entries` evicts oldest sessions | evicted session's chunks gone, newest retained |
+| 8 | Disabled switch | `enabled=False` → store & retrieve no-op | no chunks written; retrieve returns [] |
+| 9 | Robustness | malformed embedding row skipped (not crash); empty DB; brute-force fallback | malformed row ignored, others still returned; empty query / empty DB safe |
+
+## Error Handling & Robustness
+
+- Malformed/stale-dimension embedding rows must be skipped without failing the whole query (mirrors memory.py:483-485).
+- Empty DB and empty query return `[]` cleanly.
+- sqlite-vec absence is normal (optional dep); retrieval must fall back to brute-force and still pass.
+- Store failure is non-fatal by design (memory.py:380-385 logs a warning); tests assert the graceful path, not exceptions.
+
+## Success Criteria
+
+- New suite passes in CI with no model download; deterministic, no network.
+- No conflicts with existing tests; new topic-based embedder is additive.
+- Coverage of `live_edit/memory.py` L2 branches (`LongTermMemory`, `_score_and_rank`, `_format_memory_context`) materially increases (verified via `pytest --cov=live_edit.memory`).
+- Full suite (`pytest`) stays green.
+
+## Implementation Approach (per repo CLAUDE.md dual-agent mode)
+
+1. Split into 2-3 TaskCreate items (fixtures/embedder scaffold → core cross-user matrix → scoring/robustness matrix).
+2. Dispatch subagents to implement the test file (full context given, no self-reading).
+3. After each task: parallel Spec review + Code-quality review by subagents.
+4. Fix loop via subagents on FAIL; never fix by hand.
+5. Run full `pytest` + `pytest --cov=live_edit.memory` before delivery.
