@@ -12,7 +12,7 @@ live-edit's three-tier memory (memory.py) stores each edit session's request + p
 The existing tests cover this only weakly:
 
 - `tests/test_long_term.py` uses a **constant-vector FakeEmbedder** (memory.py test doubles, test_long_term.py:17-28) where cosine similarity between any two texts is exactly 1.0 — it cannot distinguish a relevant past edit from an unrelated one, so "semantic recall" is never really exercised.
-- Most suites use in-memory `FakeStorage`, so real persistence, vec-index vs brute-force fallback, migration, and eviction are untested at the integration level.
+- Storage-level persistence, migration, and eviction **are** covered with real `SQLiteStorage` in `tests/test_storage.py` and `tests/test_session_memory.py::TestMigration` — but there is **no integration coverage of the L2 `LongTermMemory` layer itself**: no store→retrieve round-trip through memory.py on a real DB exercising its scoring and brute-force/vec fallback logic.
 - No test explicitly models the "user B automatically borrows user A" scenario the feature is meant to deliver.
 
 This spec adds one new functional test file that closes those gaps.
@@ -38,7 +38,7 @@ tests/test_cross_session_memory.py   (new)
 Deterministic embeddings that let cosine similarity actually separate "similar" from "unrelated", fixing the constant-vector weakness:
 
 - A fixed set of topics, each mapped to an orthogonal basis direction vector (dimension configurable, default 8):
-  `auth, bugfix, db, style, docs, ratelimit` (mirroring the topic set in `tests/test_rag_eval.py`).
+  `auth, bugfix, db, style, docs, ratelimit` (same topic set as `tests/test_rag_eval.py`; **deliberate deviation** — unknown text maps to an independent `other` vector, not test_rag_eval.py:259's fallback-to-`auth`).
 - `embed(text)`: classify text by keyword matches into a topic → return that topic's direction vector, with a small per-text deterministic perturbation (seeded by text hash) so different texts on the same topic still have cosine slightly < 1.0.
 - Text with no topic keyword maps to a distinct "other" vector orthogonal to all topics → retrieves nothing against real topics.
 - `embed_batch` delegates to `embed`; `dimension` returns the configured dim.
@@ -48,7 +48,11 @@ Guarantees: same input → same vector (hash-seeded); same topic → high cosine
 ### Storage fixture
 
 - `storage(tmp_path)`: real `SQLiteStorage` at `tmp_path / "test_cross_session.db"`.
-- Exercises real table creation, `session_chunks` persistence, vec sync (`session_chunks_vec`) when sqlite-vec is installed, and automatic brute-force fallback when it is not. **Every assertion must hold under both paths** (e.g. do not assert row counts that differ between vec and brute-force paths).
+- Exercises real table creation, `session_chunks` persistence, vec sync (`session_chunks_vec`) when sqlite-vec is installed, and automatic brute-force fallback when it is not.
+- **Path caveats** — the default CI path is brute-force (sqlite-vec is optional and not installed in the dev env); where behavior differs between the two paths, tests must pin a path explicitly:
+  - Re-storing a session only DELETEs parent `session_chunks` rows; old `session_chunks_vec` rowids become orphans (storage.py:286-294). **Chunk-count assertions must query the parent table**, never the vec table.
+  - Malformed-row-skip holds deterministically only under brute-force; tests relying on it must force brute-force (monkeypatch `query_chunks_vec → None`).
+  - The vec path is additionally truncated by `coarse_recall_limit` (default 200, config.py:156); irrelevant for this suite's small corpus.
 
 ### User A / B simulation
 
@@ -66,13 +70,13 @@ Guarantees: same input → same vector (hash-seeded); same topic → high cosine
 |---|-------|-----------|----------------|
 | 1 | Main path (cross-user recall) | B's new session auto-recalls A's similar edit, without explicit reference | retrieved `session_id` starts with `user_a`; differently-worded query sharing a topic keyword (e.g. A stored "implement token-based auth for login", B queries "add JWT authentication" — both hit the `auth` topic) still hits; unrelated query → empty |
 | 2 | Cross-user visibility & topic filtering | A and B store different topics in one DB; B's query recalls only relevant topic, across users | no wrong-topic entries in results; relevant topic present |
-| 3 | Scoring behavior | threshold boundary; recency decay lowers old scores; hit-count bonus + 10 cap; `max_entries` truncation; per-session top-2 grouping; `file_diff` ranked above `request` | below-threshold not recalled; old chunk score significantly lower; hit bonus within cap; per-session ≤2; file_diff first |
-| 4 | Continuation semantics | re-store same session atomically replaces old chunks (no duplication); continuation recalls its own history | chunk count unchanged after re-store; own session retrievable |
+| 3 | Scoring behavior | threshold boundary; recency decay lowers old scores; hit-count bonus + 10 cap; `max_entries` truncation; per-session top-2 grouping; `file_diff` ranked above `request` | below-threshold not recalled; old chunk score significantly lower (decay test writes an old `last_accessed` directly via SQL); hit bonus within cap; per-session ≤2; **`file_diff` above `request` only within the same session** (memory.py:552) — cross-session order is by overall score |
+| 4 | Continuation semantics | re-store same session atomically replaces old chunks (no duplication); continuation recalls its own history | **parent-table** chunk count unchanged after re-store (vec table accumulates orphan rows); own session retrievable |
 | 5 | Store behavior | 1 request chunk + N file_diff chunks per modified file; empty diff → request-only; binary diff skipped | chunk_type counts exact |
-| 6 | Context formatting | `_format_memory_context` fields, "reference only" disclaimer, score clamped ≤100% | output contains disclaimer + fields; percent ≤ 100% |
-| 7 | Eviction | `max_stored_entries` evicts oldest sessions | evicted session's chunks gone, newest retained |
+| 6 | Context formatting | `_format_memory_context` fields, "reference only" disclaimer, score clamped ≤100% | output contains disclaimer + fields; percent ≤ 100%; uses the default branch (requires `memory_prompt_template=""` — the default) |
+| 7 | Eviction | `max_stored_entries` evicts oldest sessions | evicted session's chunks gone, newest retained (`created_at` is second-granular; `sleep(1.1)` before storing the newest to avoid ties, same as test_storage.py:243) |
 | 8 | Disabled switch | `enabled=False` → store & retrieve no-op | no chunks written; retrieve returns [] |
-| 9 | Robustness | malformed embedding row skipped (not crash); empty DB; brute-force fallback | malformed row ignored, others still returned; empty query / empty DB safe |
+| 9 | Robustness | malformed embedding row skipped (not crash); empty DB; brute-force fallback | **force brute-force** (monkeypatch `query_chunks_vec → None`) so the malformed row is skipped and others still returned — under the vec path the whole session is silently dropped at its single per-session vec INSERT (storage.py:286-294), so the skip-one-row assertion only holds under brute-force; empty query / empty DB safe |
 
 ## Error Handling & Robustness
 
