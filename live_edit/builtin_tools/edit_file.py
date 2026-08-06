@@ -13,12 +13,28 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     with open(path, encoding="utf-8") as f:
         content = f.read()
 
+    result = apply_edit(content, old, new)
+    if not result.get("ok"):
+        return {"ok": False, "error": result["error"]}
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(result["content"])
+    return {
+        "ok": True,
+        "path": args["path"],
+        "modified": True,
+        "matched_via": result.get("matched_via", "exact"),
+    }
+
+
+def apply_edit(content: str, old: str, new: str) -> dict:
+    """Apply an old→new replacement in memory. Pure function, no I/O.
+
+    Returns {"ok": True, "content": <new content>, "matched_via": ...} on success,
+    or {"ok": False, "error": <user-facing message>} on failure.
+    """
     count = content.count(old)
     if count == 1:
-        new_content = content.replace(old, new, 1)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        return {"ok": True, "path": args["path"], "modified": True}
+        return {"ok": True, "content": content.replace(old, new, 1), "matched_via": "exact"}
 
     if count == 0:
         norm_old = re.sub(r"\s+", " ", old).strip()
@@ -45,13 +61,9 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
             norm_line_end = norm_content.find("\n", norm_positions[0] + len(norm_old))
             line_end = norm_line_end if norm_line_end != -1 else len(content)
             orig_match = content[norm_line_start:line_end]
-            new_content = content.replace(orig_match, new, 1)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_content)
             return {
                 "ok": True,
-                "path": args["path"],
-                "modified": True,
+                "content": content.replace(orig_match, new, 1),
                 "matched_via": "whitespace_normalized",
             }
 
@@ -80,8 +92,10 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
             line_info.append(f"  L{lineno}: ...{snippet}")
         return {
             "ok": False,
-            "error": f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n"
-            + "\n".join(line_info),
+            "error": (
+                f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n"
+                + "\n".join(line_info)
+            ),
         }
 
     return {"ok": False, "error": "unreachable"}  # all paths return above

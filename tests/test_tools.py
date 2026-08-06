@@ -498,3 +498,38 @@ class TestExecuteTool:
         result = await execute_tool("nonexistent_tool", {}, str(tmp_path))
         assert result["ok"] is False
         assert "未知工具" in result["error"]
+
+
+class TestApplyEdit:
+    """Pure apply_edit extracted from edit_file execution."""
+
+    def test_apply_edit_exact(self):
+        from live_edit.builtin_tools.edit_file import apply_edit
+
+        result = apply_edit("old\nline\n", "old", "new")
+        assert result["ok"] is True
+        assert result["content"] == "new\nline\n"
+        assert result["matched_via"] == "exact"
+
+    def test_apply_edit_not_found(self):
+        from live_edit.builtin_tools.edit_file import apply_edit
+
+        result = apply_edit("hello\n", "missing", "new")
+        assert result["ok"] is False
+        assert "未找到" in result["error"]
+
+    def test_apply_edit_multiple_matches(self):
+        from live_edit.builtin_tools.edit_file import apply_edit
+
+        result = apply_edit("a a a\n", "a", "b")
+        assert result["ok"] is False
+        assert "匹配了 3 处" in result["error"]
+
+    def test_apply_edit_whitespace_normalized_single_match(self):
+        from live_edit.builtin_tools.edit_file import apply_edit
+
+        result = apply_edit("hello   world\nnext\n", "hello world", "hi")
+        assert result["ok"] is True
+        assert result["matched_via"] == "whitespace_normalized"
+        # norm_content 把换行折成空格后 find("\n") 恒为 -1，orig_match 覆盖整个文件
+        assert result["content"] == "hi"
