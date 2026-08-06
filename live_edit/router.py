@@ -48,6 +48,10 @@ class ApproveRequest(BaseModel):
     approved: bool = True
 
 
+class BatchApproveRequest(BaseModel):
+    enabled: bool = True
+
+
 class KnowledgeUpload(BaseModel):
     source_path: str
     content: str
@@ -71,6 +75,7 @@ def setup_live_edit(
     tool_registry: object | None = None,
     audit_log: AuditLog | None = None,
     metrics: Metrics | None = None,
+    session_store: SessionStore | None = None,
 ) -> APIRouter:
     """Create and return a FastAPI router with all live-edit endpoints.
 
@@ -137,7 +142,8 @@ def setup_live_edit(
     # Global session store
     ttl = getattr(config.timeouts, "session_ttl", 1800) if hasattr(config, "timeouts") else 1800
     max_active = getattr(config.sessions, "max_active", 10) if hasattr(config, "sessions") else 10
-    session_store = SessionStore(max_active=max_active, ttl_seconds=ttl, audit_log=audit_log)
+    if session_store is None:
+        session_store = SessionStore(max_active=max_active, ttl_seconds=ttl, audit_log=audit_log)
 
     # Tool registry
     if tool_registry is None:
@@ -340,6 +346,26 @@ def setup_live_edit(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # ── POST /live-edit/approve/{session_id}/batch ──
+    # NOTE: registered BEFORE /approve/{session_id}/{tool_id} because Starlette
+    # matches routes in registration order — "/approve/{session_id}/batch" would
+    # otherwise be captured by the generic {tool_id} route.
+
+    @router.post("/approve/{session_id}/batch")
+    async def batch_approve(session_id: str, req: BatchApproveRequest):
+        """Enable/disable auto-approval for all subsequent write tools in a session."""
+        session = session_store.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在或已过期")
+        session.set_auto_approve(req.enabled)
+        audit_log.record(
+            "approve_batch",
+            target=session_id,
+            session_id=session_id,
+            result="enabled" if req.enabled else "disabled",
+        )
+        return {"ok": True, "enabled": req.enabled}
 
     # ── POST /live-edit/approve/{session_id}/{tool_id} ──
 
