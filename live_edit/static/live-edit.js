@@ -476,6 +476,7 @@
       ${event.reason ? '<div class="le-tool-detail">原因: ' + escapeHtml(event.reason) + "</div>" : ""}
       ${diffHtml}
       <div class="le-tool-actions">
+        <button class="le-btn le-btn-primary le-batch-approve">全部批准</button>
         <button class="le-btn le-btn-danger le-reject-btn">拒绝</button>
         <button class="le-btn le-btn-primary le-approve-btn">批准</button>
       </div>
@@ -491,6 +492,13 @@
       approveTool(event.id, false);
       card.querySelector(".le-tool-actions").innerHTML =
         '<span style="color:var(--le-error)">已拒绝 &#10007;</span>';
+    });
+
+    card.querySelector(".le-batch-approve").addEventListener("click", () => {
+      batchApprove(true);
+      approveTool(event.id, true);
+      card.querySelector(".le-tool-actions").innerHTML =
+        '<span style="color:var(--le-success)">已批准，后续操作将自动执行 &#10003;</span>';
     });
 
     tl.appendChild(card);
@@ -562,6 +570,19 @@
       });
     } catch (e) {
       console.error("live-edit: approve error", e);
+    }
+  }
+
+  async function batchApprove(enabled) {
+    if (!currentSessionId) return;
+    try {
+      await fetch(API_PREFIX + "/approve/" + currentSessionId + "/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+    } catch (e) {
+      console.error("live-edit: batch approve error", e);
     }
   }
 

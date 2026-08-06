@@ -419,3 +419,8 @@
   max-height: 200px;
   overflow: auto;
 }
+
+.le-btn.le-batch-approve {
+  margin-right: 4px;
+  opacity: 0.9;
+}
