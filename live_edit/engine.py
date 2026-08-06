@@ -9,6 +9,7 @@ import time
 import traceback
 
 from .config import Config
+from .diff import compute_write_diff
 from .evaluation import run_evaluation_pipeline
 from .memory import MemoryManager
 from .provider import Provider
@@ -854,6 +855,7 @@ async def run_edit_session(
                 if needs_approval:
                     reason = tool_input.get("reason", "")
                     summary = _tool_summary(tool_name, tool_input)
+                    preview_diff = compute_write_diff(tool_name, tool_input, _root)
                     result = await session.wait_for_approval(
                         tool_id,
                         {
@@ -861,6 +863,7 @@ async def run_edit_session(
                             "args": tool_input,
                             "reason": reason,
                             "summary": summary,
+                            "preview_diff": preview_diff,
                         },
                     )
                     if not result.get("approved"):
