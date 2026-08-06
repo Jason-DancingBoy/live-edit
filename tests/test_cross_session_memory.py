@@ -332,3 +332,293 @@ class TestDisabledSwitch:
         context, updated = mgr.retrieve_sync("add jwt auth", "s1", msgs, 1)
         assert context == ""
         assert updated is msgs
+
+
+class TestScoring:
+    def _ltm(self, storage, embedder, **overrides):
+        defaults = {
+            "enabled": True,
+            "similarity_threshold": 0.0,
+            "recency_decay_rate": 0.0,
+            "hit_count_weight": 0.0,
+            "max_entries": 10,
+            "max_stored_entries": 5000,
+        }
+        defaults.update(overrides)
+        return LongTermMemory(storage, embedder, LongTermConfig(**defaults))
+
+    async def test_cross_topic_below_threshold_filtered(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, similarity_threshold=0.6)
+        await ltm.store(
+            "s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        assert ltm.retrieve_sync("add dark mode theme to the UI") == []
+
+    async def test_recency_decay_ranks_recent_first(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, recency_decay_rate=1.0)
+        await ltm.store("old", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h-old")
+        await ltm.store("new", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h-new")
+        conn = storage._get_conn()
+        conn.execute(
+            "UPDATE session_chunks SET last_accessed = '2026-04-28T00:00:00' "
+            "WHERE session_id = 'old'"
+        )
+        conn.commit()
+        results = ltm.retrieve_sync("add jwt auth login")
+        assert results
+        assert results[0].session_id == "new"
+        old = next(e for e in results if e.session_id == "old")
+        assert old.score < 0.1
+
+    async def test_hit_count_bonus_within_cap(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, hit_count_weight=0.05)
+        await ltm.store("s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
+        conn = storage._get_conn()
+        conn.execute("UPDATE session_chunks SET hit_count = 50 WHERE session_id = 's1'")
+        conn.commit()
+        results = ltm.retrieve_sync("add jwt auth")
+        assert results
+        assert results[0].score > 1.0  # bonus present
+        assert results[0].score < 1.0 + 0.5 + 0.05  # capped at min(50,10)*0.05=0.5
+
+    async def test_max_entries_truncation(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, max_entries=2)
+        for i in range(3):
+            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+        assert len(ltm.retrieve_sync("add jwt auth")) <= 2
+
+    async def test_per_session_top_two(self, storage, embedder):
+        ltm = self._ltm(storage, embedder)
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        s1 = [e for e in ltm.retrieve_sync("add jwt auth") if e.session_id == "s1"]
+        assert len(s1) <= 2
+
+    async def test_file_diff_retained_over_request(self, storage, embedder):
+        ltm = self._ltm(storage, embedder)
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        results = [e for e in ltm.retrieve_sync("add jwt auth") if e.session_id == "s1"]
+        assert len(results) == 2
+        assert all(e.file_path for e in results)  # the two retained are the file_diffs
+
+
+class TestContextFormatting:
+    async def test_format_context_fields(self, storage, embedder):
+        lcfg = LongTermConfig(
+            enabled=True,
+            similarity_threshold=0.6,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+            max_entries=5,
+        )
+        cfg = MemoryConfig(
+            enabled=True,
+            short_term=ShortTermConfig(
+                max_full_rounds=10, max_stripped_rounds=10, max_summary_rounds=10
+            ),
+            long_term=lcfg,
+            knowledge=KnowledgeConfig(enabled=False),
+        )
+        mgr = MemoryManager(storage, embedder, cfg)
+        await mgr.store(
+            "user_a:111",
+            "implement JWT token auth for login",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h1",
+        )
+        msgs = [{"role": "user", "content": "add jwt auth"}]
+        context, _ = mgr.retrieve_sync("add jwt auth", "user_b:222", msgs, round_num=1)
+        assert "## Relevant Past Changes" in context
+        assert "reference only" in context
+        assert "implement JWT token auth" in context
+        pcts = [int(m) for m in re.findall(r"\((\d+)%\)", context)]
+        assert pcts and all(p <= 100 for p in pcts)  # score clamped <= 100%
+
+
+class TestEviction:
+    async def test_oldest_session_evicted(self, storage, embedder):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6, max_stored_entries=3),
+        )
+        for i in range(4):
+            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+            await asyncio.sleep(1.1)
+        sids = {c[1] for c in storage.query_chunks()}
+        assert sids == {"s1", "s2", "s3"}
+
+
+class TestRobustness:
+    async def test_malformed_row_skipped_under_brute_force(
+        self, storage, embedder, monkeypatch
+    ):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6),
+        )
+        # Force the brute-force path (sqlite-vec not installed anyway).
+        monkeypatch.setattr(storage, "query_chunks_vec", lambda *a, **k: None)
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        storage.store_chunks(
+            "user_b:bad",
+            "h-bad",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "add jwt auth",
+                    "payload_json": json.dumps({"request": "add jwt auth"}),
+                    "file_path": "",
+                    "embedding_bytes": struct.pack("16f", *([0.5] * 16)),
+                }
+            ],
+        )
+        results = ltm.retrieve_sync("add jwt auth login")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert not any(e.session_id.startswith("user_b:") for e in results)
+
+    async def test_empty_db_returns_empty(self, storage, embedder):
+        ltm = LongTermMemory(storage, embedder, LongTermConfig(enabled=True))
+        assert ltm.retrieve_sync("add jwt auth") == []
+
+    async def test_empty_query_safe(self, storage, embedder):
+        ltm = LongTermMemory(storage, embedder, LongTermConfig(enabled=True))
+        assert ltm.retrieve_sync("") == []
+
+
+class TestRetrievalSideEffect:
+    async def test_retrieve_bumps_hit_count(self, storage, embedder):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6),
+        )
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        rows_before = storage.query_chunks()
+        pinned = rows_before[0][0]  # chunk id
+        assert rows_before[0][8] == 0  # hit_count
+        ltm.retrieve_sync("add jwt auth login")
+        rows_after = storage.query_chunks()
+        matched = next(r for r in rows_after if r[0] == pinned)
+        assert matched[8] == 1
+        assert matched[9] is not None  # last_accessed refreshed
+
+
+class TestL3FallbackAndMutualExclusion:
+    def _mgr(self, storage, embedder):
+        lcfg = LongTermConfig(
+            enabled=True,
+            similarity_threshold=0.6,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+            max_entries=5,
+        )
+        kcfg = KnowledgeConfig(enabled=True, max_entries=5)
+        cfg = MemoryConfig(
+            enabled=True,
+            short_term=ShortTermConfig(
+                max_full_rounds=10, max_stripped_rounds=10, max_summary_rounds=10
+            ),
+            long_term=lcfg,
+            knowledge=kcfg,
+        )
+        return MemoryManager(storage, embedder, cfg)
+
+    async def test_l2_empty_triggers_knowledge(self, storage, embedder):
+        mgr = self._mgr(storage, embedder)
+        mgr.add_knowledge(
+            "api:db-tips", "database connection pool sizing and throughput guide", {}
+        )
+        msgs = [{"role": "user", "content": "database pool config"}]
+        context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
+        assert "## Project Knowledge" in context
+
+    async def test_l2_hit_suppresses_knowledge(self, storage, embedder):
+        mgr = self._mgr(storage, embedder)
+        mgr.add_knowledge(
+            "api:db-tips", "database connection pool sizing and throughput guide", {}
+        )
+        await mgr.store(
+            "user_a:111",
+            "tune database connection pool settings",
+            ["src/db/pool.py"],
+            DB_DIFF,
+            "h1",
+        )
+        msgs = [{"role": "user", "content": "database pool config"}]
+        context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
+        assert "## Relevant Past Changes" in context
+        assert "## Project Knowledge" not in context
+
+
+class TestV1ToV2Migration:
+    def test_migrated_chunks_retrievable(self, tmp_path, embedder):
+        import sqlite3
+
+        from live_edit.storage import SQLiteStorage
+
+        db_path = str(tmp_path / "migrate.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                request TEXT NOT NULL,
+                files_json TEXT NOT NULL DEFAULT '[]',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                commit_hash TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                file_path TEXT DEFAULT '',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.commit()
+        db_vec = _vec_bytes([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # db topic, dim 8
+        conn.execute(
+            "INSERT INTO session_embeddings (session_id, request, files_json, embedding) "
+            "VALUES (?, ?, ?, ?)",
+            ("user_a:legacy", "database connection pool tuning", '["src/db/pool.py"]', db_vec),
+        )
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteStorage(db_path)
+        ltm = LongTermMemory(
+            storage, embedder, LongTermConfig(enabled=True, similarity_threshold=0.6)
+        )
+        results = ltm.retrieve_sync("connection pool settings")
+        assert any(e.session_id == "user_a:legacy" for e in results)
+        payload = json.loads(storage.query_chunks()[0][5])
+        assert payload.get("migrated") is True
