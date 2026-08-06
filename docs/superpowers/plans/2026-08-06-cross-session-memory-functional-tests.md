@@ -1,0 +1,769 @@
+# Cross-Session Memory Functional Tests Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add `tests/test_cross_session_memory.py` — a functional/integration suite proving the L2 long-term-memory contract that a new session (even from a different user) automatically recalls semantically similar past edits from the shared project DB.
+
+**Architecture:** One new test file using a real `SQLiteStorage` on `tmp_path`, a deterministic topic-keyword `TopicFakeEmbedder` (semantically discriminative, fixing the constant-vector weakness), and explicit `user_a:`/`user_b:` session namespaces. Target is the current L2 path `MemoryManager → LongTermMemory` (memory.py), never the legacy `session_memory.SessionMemory`.
+
+**Tech Stack:** pytest (asyncio_mode="auto"), Python stdlib `sqlite3` via `SQLiteStorage`, `struct`/`hashlib` for embeddings. No model downloads, no network.
+
+## Global Constraints
+
+- **Test-only change.** No production code in `live_edit/` may be touched.
+- **Target path is `MemoryManager → LongTermMemory`** (memory.py). Never import or test `live_edit.session_memory.SessionMemory`.
+- **Real `SQLiteStorage`** on `tmp_path` for every storage-backed test. Do not use FakeStorage.
+- **sqlite-vec is NOT installed** in CI/dev. `query_chunks_vec` returns `None` and retrieval uses brute-force `query_chunks`. All assertions must hold on that path. Vec-only behaviors are exempt (spec Non-Goals).
+- **asyncio_mode="auto"** (pyproject.toml). Async test functions run automatically: write them as `async def` and `await` the async API. Sync test functions wrap async calls in `asyncio.run(...)`. **Never call `store_sync`/`retrieve_sync`-style helpers from inside an async test** (fire-and-forget race).
+- **Ruff** on tests: `E501` is ignored for `tests/*`; code must still be import-clean (`E`, `F`, `I`, `UP`, `B`, `C4`, `SIM`), double quotes, line-length 100.
+- Full-suite run must stay green; `coverage fail_under=60` applies to the whole suite, not a single file.
+
+---
+
+### Task 1: Scaffold — embedder, fixtures, sample diffs, embedder self-tests
+
+**Files:**
+- Create: `tests/test_cross_session_memory.py`
+
+**Interfaces:**
+- Produces (later tasks rely on these names/contracts):
+  - `TopicFakeEmbedder(dim=8)` with `embed(str)->list[float]`, `embed_batch(list[str])`, `dimension->int`. Same-topic cosine > 0.95; cross-topic cosine < 0.1; unknown text → `other` vector orthogonal to topics. Perturbation pinned so same-topic cosine delta < 0.05.
+  - Fixtures: `storage` (real `SQLiteStorage`), `embedder` (`TopicFakeEmbedder(dim=8)`), `ltm` (a `LongTermMemory` with `similarity_threshold=0.6`, no decay, no hit bonus, `max_entries=10`, `max_stored_entries=5000`).
+  - Diff constants `AUTH_DIFF`, `DB_DIFF`, `STYLE_DIFF`, `TWO_FILE_DIFF`, `BINARY_DIFF`; helper `_vec_bytes(vec)`.
+  - Topic keywords (longest-match-first, fixed order): `("null pointer","bugfix")`, `("rate limit","ratelimit")`, `("connection pool","db")`, `("rate_limit","ratelimit")`, `("dark mode","style")`, `("dark theme","style")`, `("api example","docs")`, `("database","db")`, `("throttle","ratelimit")`, `("credential","auth")`, `("crash","bugfix")`, `("login","auth")`, `("token","auth")`, `("auth","auth")`, `("jwt","auth")`, `("css","style")`, `("theme","style")`, `("readme","docs")`, `("document","docs")`, `("pool","db")`, `("style","style")`.
+
+- [ ] **Step 1: Write the scaffold**
+
+Create `tests/test_cross_session_memory.py` with exactly:
+
+```python
+"""Functional tests for cross-session / cross-user L2 long-term memory.
+
+Validates the contract that a new session (even from a different user) can
+retrieve semantically similar past edits from the shared project DB, plus
+scoring, store, formatting, eviction, fallback, and migration behavior.
+See docs/superpowers/specs/2026-08-06-cross-session-memory-functional-tests-design.md
+"""
+
+import asyncio
+import hashlib
+import json
+import re
+import struct
+
+import pytest
+
+from live_edit.config import (
+    KnowledgeConfig,
+    LongTermConfig,
+    MemoryConfig,
+    ShortTermConfig,
+)
+from live_edit.memory import LongTermMemory, MemoryManager
+
+
+class TopicFakeEmbedder:
+    """Deterministic, semantically discriminative embedder.
+
+    Each topic maps to an orthogonal basis vector; embed() classifies text by
+    keyword (longest-match-first) into a topic and adds a tiny hash-seeded
+    perturbation. Same-topic texts have cosine > 0.95 (delta < 0.05), so the
+    -0.05 tiebreak in LongTermMemory._score_and_rank is decisive; cross-topic
+    cosine ~= 0; unknown text -> "other" (orthogonal to all topics).
+    """
+
+    TOPICS = ["auth", "bugfix", "db", "style", "docs", "ratelimit"]
+
+    KEYWORDS = [
+        ("null pointer", "bugfix"),
+        ("rate limit", "ratelimit"),
+        ("connection pool", "db"),
+        ("rate_limit", "ratelimit"),
+        ("dark mode", "style"),
+        ("dark theme", "style"),
+        ("api example", "docs"),
+        ("database", "db"),
+        ("throttle", "ratelimit"),
+        ("credential", "auth"),
+        ("crash", "bugfix"),
+        ("login", "auth"),
+        ("token", "auth"),
+        ("auth", "auth"),
+        ("jwt", "auth"),
+        ("css", "style"),
+        ("theme", "style"),
+        ("readme", "docs"),
+        ("document", "docs"),
+        ("pool", "db"),
+        ("style", "style"),
+    ]
+
+    def __init__(self, dim: int = 8):
+        self._dim = dim
+        self._topic_vecs = {}
+        for i, topic in enumerate(self.TOPICS):
+            v = [0.0] * dim
+            v[i] = 1.0
+            self._topic_vecs[topic] = v
+        self._other_vec = [0.0] * dim
+        self._other_vec[len(self.TOPICS)] = 1.0
+
+    def _classify(self, text: str) -> str:
+        low = text.lower()
+        for keyword, topic in self.KEYWORDS:
+            if keyword in low:
+                return topic
+        return "other"
+
+    def embed(self, text: str) -> list[float]:
+        base = self._topic_vecs.get(self._classify(text), self._other_vec)
+        h = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16)
+        perturb = 0.001 * ((h % 1000) / 1000.0 - 0.5)
+        return [x + perturb for x in base]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(t) for t in texts]
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+
+AUTH_DIFF = """diff --git a/src/auth.py b/src/auth.py
+index 111111..222222 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,3 +1,6 @@
+ def login(user, password):
+-    return check_db(user, password)
++    token = jwt.encode({"user": user}, SECRET)
++    return token
+"""
+
+DB_DIFF = """diff --git a/src/db/pool.py b/src/db/pool.py
+index 333333..444444 100644
+--- a/src/db/pool.py
++++ b/src/db/pool.py
+@@ -1,3 +1,6 @@
+ class ConnectionPool:
+-    def __init__(self, size=5):
+-        self._pool = [create_conn() for _ in range(size)]
++    def __init__(self, min_size=5, max_size=20):
++        self._pool = [create_conn() for _ in range(min_size)]
+"""
+
+STYLE_DIFF = """diff --git a/src/styles/theme.css b/src/styles/theme.css
+index 555555..666666 100644
+--- a/src/styles/theme.css
++++ b/src/styles/theme.css
+@@ -1,3 +1,6 @@
++:root {
++  --color-bg: #0f172a;
++  --color-text: #e2e8f0;
++}
++
+ body {
+   background: white;
+ }
+"""
+
+TWO_FILE_DIFF = """diff --git a/src/auth.py b/src/auth.py
+index 111111..222222 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,3 +1,6 @@
++import jwt
++
+ def login(user, password):
+-    return check_db(user, password)
++    return jwt.encode({"user": user}, SECRET)
+diff --git a/src/session.py b/src/session.py
+index 333333..444444 100644
+--- a/src/session.py
++++ b/src/session.py
+@@ -10,3 +10,6 @@
+ class Session:
+     pass
++
++def create_session(user_id):
++    return Session(user_id=user_id)
+"""
+
+BINARY_DIFF = """diff --git a/img.png b/img.png
+index 777777..888888 100644
+Binary files a/img.png and b/img.png differ
+"""
+
+
+def _vec_bytes(vec: list[float]) -> bytes:
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+@pytest.fixture
+def storage(tmp_path):
+    from live_edit.storage import SQLiteStorage
+
+    return SQLiteStorage(str(tmp_path / "test_cross_session.db"))
+
+
+@pytest.fixture
+def embedder():
+    return TopicFakeEmbedder(dim=8)
+
+
+@pytest.fixture
+def ltm(storage, embedder):
+    cfg = LongTermConfig(
+        enabled=True,
+        similarity_threshold=0.6,
+        recency_decay_rate=0.0,
+        hit_count_weight=0.0,
+        max_entries=10,
+        max_stored_entries=5000,
+    )
+    return LongTermMemory(storage, embedder, cfg)
+
+
+class TestTopicFakeEmbedder:
+    def test_same_topic_high_cosine(self, embedder):
+        a = embedder.embed("implement JWT token auth for login")
+        b = embedder.embed("add jwt authentication to login flow")
+        assert LongTermMemory._cosine_similarity(a, b) > 0.95
+
+    def test_cross_topic_near_zero(self, embedder):
+        a = embedder.embed("add JWT auth login")
+        b = embedder.embed("add dark mode theme")
+        assert LongTermMemory._cosine_similarity(a, b) < 0.1
+
+    def test_other_orthogonal_to_topics(self, embedder):
+        other = embedder.embed("unrelated task with no topic keyword")
+        auth = embedder.embed("add JWT auth")
+        assert LongTermMemory._cosine_similarity(other, auth) < 0.1
+
+    def test_deterministic(self, embedder):
+        assert embedder.embed("add JWT auth") == embedder.embed("add JWT auth")
+```
+
+- [ ] **Step 2: Run to verify the embedder is sound**
+
+Run: `python3 -m pytest tests/test_cross_session_memory.py::TestTopicFakeEmbedder -v`
+Expected: 4 passed.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_cross_session_memory.py
+git commit -m "test(memory): scaffold TopicFakeEmbedder + fixtures for cross-session suite"
+```
+
+---
+
+### Task 2: Core cross-user matrix — recall, topic filter, continuation, store, disabled
+
+**Files:**
+- Modify: `tests/test_cross_session_memory.py` (append test classes)
+
+**Interfaces:**
+- Consumes: fixtures and constants from Task 1 (`storage`, `embedder`, `ltm`, diff constants, `MemoryConfig`/`KnowledgeConfig`/`ShortTermConfig`).
+- Produces: nothing new for later tasks beyond passing tests.
+
+Behavioral contracts this task relies on (verified in memory.py):
+- `LongTermMemory.store(session_id, request, files, diff, commit_hash)` is async; produces 1 `request` chunk + 1 `file_diff` per parsed file.
+- `LongTermMemory.retrieve_sync(query)` scans all chunks in the DB with no session/user filter and returns `MemoryEntry(session_id, request, file_path, diff_summary, stat, commit_hash, score)`.
+- Re-storing the same `session_id` replaces its old chunks (atomic DELETE + INSERT in `store_chunks`).
+- `MemoryConfig(enabled=False)` makes every layer of `MemoryManager` `None` → store/retrieve no-ops.
+- `MemoryEntry.file_path` is non-empty only for `file_diff` chunks.
+
+- [ ] **Step 1: Append the core cross-user tests**
+
+Append to `tests/test_cross_session_memory.py`:
+
+```python
+class TestCrossUserRecall:
+    async def test_b_retrieves_a_similar_edit(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        results = ltm.retrieve_sync("add jwt authentication to the login flow")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert any(e.file_path for e in results)  # a file_diff chunk surfaced
+
+    async def test_unrelated_query_returns_empty(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        assert ltm.retrieve_sync("unrelated task with no topic keyword") == []
+
+    async def test_same_topic_a_and_b_both_surface(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login endpoint",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        await ltm.store(
+            "user_b:222",
+            "refactor JWT auth to use refresh tokens",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-b",
+        )
+        sids = {e.session_id for e in ltm.retrieve_sync("add jwt authentication")}
+        assert any(s.startswith("user_a:") for s in sids)
+        assert any(s.startswith("user_b:") for s in sids)
+
+
+class TestCrossUserTopicFiltering:
+    async def test_b_recalls_only_relevant_topic(self, ltm):
+        await ltm.store(
+            "user_a:111",
+            "implement JWT token auth for login",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h-a",
+        )
+        await ltm.store(
+            "user_b:222",
+            "add dark mode theme to the UI",
+            ["src/styles/theme.css"],
+            STYLE_DIFF,
+            "h-b",
+        )
+        results = ltm.retrieve_sync("jwt token auth login")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert not any(e.session_id.startswith("user_b:") for e in results)
+
+
+class TestContinuation:
+    async def test_restore_replaces_chunks(self, ltm, storage):
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        count1 = len(storage.query_chunks())
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
+        )
+        count2 = len(storage.query_chunks())
+        assert count1 == 2  # 1 request + 1 file_diff
+        assert count2 == 2  # replaced, not duplicated
+
+    async def test_continuation_recalls_own_history(self, ltm):
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
+        )
+        results = ltm.retrieve_sync("add jwt auth")
+        assert any(e.session_id.startswith("user_a:") for e in results)
+
+
+class TestStoreBehavior:
+    async def test_two_file_diff_chunks(self, ltm, storage):
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        rows = storage.query_chunks()
+        assert {c[3] for c in rows} == {"request", "file_diff"}
+        assert sum(1 for c in rows if c[3] == "file_diff") == 2
+        assert sum(1 for c in rows if c[3] == "request") == 1
+
+    async def test_empty_diff_request_only(self, ltm, storage):
+        await ltm.store("s1", "implement JWT token auth", ["src/auth.py"], "", "h1")
+        rows = storage.query_chunks()
+        assert len(rows) == 1
+        assert rows[0][3] == "request"
+
+    async def test_binary_diff_request_only(self, ltm, storage):
+        await ltm.store("s1", "implement JWT token auth", [], BINARY_DIFF, "h1")
+        rows = storage.query_chunks()
+        assert len(rows) == 1
+        assert rows[0][3] == "request"
+
+
+class TestDisabledSwitch:
+    def test_master_switch_noop(self, storage, embedder):
+        cfg = MemoryConfig(enabled=False)
+        mgr = MemoryManager(storage, embedder, cfg)
+        mgr.store_sync("s1", "implement JWT auth", ["src/auth.py"], AUTH_DIFF, "h1")
+        assert storage.query_chunks() == []
+        msgs = [{"role": "user", "content": "add jwt auth"}]
+        context, updated = mgr.retrieve_sync("add jwt auth", "s1", msgs, 1)
+        assert context == ""
+        assert updated is msgs
+```
+
+- [ ] **Step 2: Run the new tests**
+
+Run: `python3 -m pytest tests/test_cross_session_memory.py -v`
+Expected: all 12 tests pass (4 embedder + 8 new).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_cross_session_memory.py
+git commit -m "test(memory): cross-user recall, topic filter, continuation, store, disabled"
+```
+
+---
+
+### Task 3: Scoring, formatting, eviction, robustness, side effects, L3 fallback, migration
+
+**Files:**
+- Modify: `tests/test_cross_session_memory.py` (append test classes)
+
+**Interfaces:**
+- Consumes: fixtures/constants from Task 1; `MemoryManager` behaviors from Task 2.
+- Produces: complete suite.
+
+Behavioral contracts this task relies on (verified in memory.py):
+- `_score_and_rank`: `score = cosine * decay + hit_bonus`, `decay = exp(-recency_decay_rate * days)` when `last_accessed` set (else 1.0), `hit_bonus = hit_count_weight * min(hit_count, 10)`. Cross-topic cosine ≈ 0 < 0.6 threshold → filtered.
+- Grouping: per session, sort by `score + (0.0 if file_diff else -0.05)`, keep top-2; then global re-sort by bare score, take `max_entries`.
+- `retrieve_sync` bumps `hit_count` (via `update_chunk_hit_counts`) for every over-threshold chunk after scoring — assert on a pinned chunk id.
+- `MemoryManager.retrieve_sync` runs L1, then L2; L3 knowledge fires only when L2 returned nothing (memory.py:850-853).
+- Eviction: `delete_old_sessions(max_sessions)` runs after every `store`, keeps the `max_sessions` most-recent sessions by `MIN(created_at)` (second-granular — sleep 1.1s between stores).
+- `LongTermMemory.__init__` migrates legacy `session_embeddings` rows into `session_chunks` (memory.py:232-299), payload gains `migrated: true`.
+- SQL to inject state: use `storage._get_conn()` + `conn.execute(...)` + `conn.commit()`.
+
+- [ ] **Step 1: Append scoring, formatting, eviction, robustness, side-effect, L3, migration tests**
+
+Append to `tests/test_cross_session_memory.py`:
+
+```python
+class TestScoring:
+    def _ltm(self, storage, embedder, **overrides):
+        defaults = dict(
+            enabled=True,
+            similarity_threshold=0.0,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+            max_entries=10,
+            max_stored_entries=5000,
+        )
+        defaults.update(overrides)
+        return LongTermMemory(storage, embedder, LongTermConfig(**defaults))
+
+    async def test_cross_topic_below_threshold_filtered(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, similarity_threshold=0.6)
+        await ltm.store(
+            "s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        assert ltm.retrieve_sync("add dark mode theme to the UI") == []
+
+    async def test_recency_decay_ranks_recent_first(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, recency_decay_rate=1.0)
+        await ltm.store("old", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h-old")
+        await ltm.store("new", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h-new")
+        conn = storage._get_conn()
+        conn.execute(
+            "UPDATE session_chunks SET last_accessed = '2026-04-28T00:00:00' "
+            "WHERE session_id = 'old'"
+        )
+        conn.commit()
+        results = ltm.retrieve_sync("add jwt auth login")
+        assert results
+        assert results[0].session_id == "new"
+        old = next(e for e in results if e.session_id == "old")
+        assert old.score < 0.1
+
+    async def test_hit_count_bonus_within_cap(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, hit_count_weight=0.05)
+        await ltm.store("s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
+        conn = storage._get_conn()
+        conn.execute("UPDATE session_chunks SET hit_count = 50 WHERE session_id = 's1'")
+        conn.commit()
+        results = ltm.retrieve_sync("add jwt auth")
+        assert results
+        assert results[0].score > 1.0  # bonus present
+        assert results[0].score < 1.0 + 0.5 + 0.05  # capped at min(50,10)*0.05=0.5
+
+    async def test_max_entries_truncation(self, storage, embedder):
+        ltm = self._ltm(storage, embedder, max_entries=2)
+        for i in range(3):
+            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+        assert len(ltm.retrieve_sync("add jwt auth")) <= 2
+
+    async def test_per_session_top_two(self, storage, embedder):
+        ltm = self._ltm(storage, embedder)
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        s1 = [e for e in ltm.retrieve_sync("add jwt auth") if e.session_id == "s1"]
+        assert len(s1) <= 2
+
+    async def test_file_diff_retained_over_request(self, storage, embedder):
+        ltm = self._ltm(storage, embedder)
+        await ltm.store(
+            "s1",
+            "implement JWT token auth",
+            ["src/auth.py", "src/session.py"],
+            TWO_FILE_DIFF,
+            "h1",
+        )
+        results = [e for e in ltm.retrieve_sync("add jwt auth") if e.session_id == "s1"]
+        assert len(results) == 2
+        assert all(e.file_path for e in results)  # the two retained are the file_diffs
+
+
+class TestContextFormatting:
+    async def test_format_context_fields(self, storage, embedder):
+        lcfg = LongTermConfig(
+            enabled=True,
+            similarity_threshold=0.6,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+            max_entries=5,
+        )
+        cfg = MemoryConfig(
+            enabled=True,
+            short_term=ShortTermConfig(max_full_rounds=10),
+            long_term=lcfg,
+            knowledge=KnowledgeConfig(enabled=False),
+        )
+        mgr = MemoryManager(storage, embedder, cfg)
+        await mgr.store(
+            "user_a:111",
+            "implement JWT token auth for login",
+            ["src/auth.py"],
+            AUTH_DIFF,
+            "h1",
+        )
+        msgs = [{"role": "user", "content": "add jwt auth"}]
+        context, _ = mgr.retrieve_sync("add jwt auth", "user_b:222", msgs, round_num=1)
+        assert "## Relevant Past Changes" in context
+        assert "reference only" in context
+        assert "implement JWT token auth" in context
+        pcts = [int(m) for m in re.findall(r"\((\d+)%\)", context)]
+        assert pcts and all(p <= 100 for p in pcts)  # score clamped <= 100%
+
+
+class TestEviction:
+    async def test_oldest_session_evicted(self, storage, embedder):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6, max_stored_entries=3),
+        )
+        for i in range(4):
+            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+            await asyncio.sleep(1.1)
+        sids = {c[1] for c in storage.query_chunks()}
+        assert sids == {"s1", "s2", "s3"}
+
+
+class TestRobustness:
+    async def test_malformed_row_skipped_under_brute_force(
+        self, storage, embedder, monkeypatch
+    ):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6),
+        )
+        # Force the brute-force path (sqlite-vec not installed anyway).
+        monkeypatch.setattr(storage, "query_chunks_vec", lambda *a, **k: None)
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        storage.store_chunks(
+            "user_b:bad",
+            "h-bad",
+            [
+                {
+                    "chunk_type": "request",
+                    "chunk_text": "add jwt auth",
+                    "payload_json": json.dumps({"request": "add jwt auth"}),
+                    "file_path": "",
+                    "embedding_bytes": struct.pack("16f", *([0.5] * 16)),
+                }
+            ],
+        )
+        results = ltm.retrieve_sync("add jwt auth login")
+        assert results
+        assert all(e.session_id.startswith("user_a:") for e in results)
+        assert not any(e.session_id.startswith("user_b:") for e in results)
+
+    async def test_empty_db_returns_empty(self, storage, embedder):
+        ltm = LongTermMemory(storage, embedder, LongTermConfig(enabled=True))
+        assert ltm.retrieve_sync("add jwt auth") == []
+
+    async def test_empty_query_safe(self, storage, embedder):
+        ltm = LongTermMemory(storage, embedder, LongTermConfig(enabled=True))
+        assert ltm.retrieve_sync("") == []
+
+
+class TestRetrievalSideEffect:
+    async def test_retrieve_bumps_hit_count(self, storage, embedder):
+        ltm = LongTermMemory(
+            storage,
+            embedder,
+            LongTermConfig(enabled=True, similarity_threshold=0.6),
+        )
+        await ltm.store(
+            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
+        )
+        rows_before = storage.query_chunks()
+        pinned = rows_before[0][0]  # chunk id
+        assert rows_before[0][8] == 0  # hit_count
+        ltm.retrieve_sync("add jwt auth login")
+        rows_after = storage.query_chunks()
+        matched = next(r for r in rows_after if r[0] == pinned)
+        assert matched[8] == 1
+        assert matched[9] is not None  # last_accessed refreshed
+
+
+class TestL3FallbackAndMutualExclusion:
+    def _mgr(self, storage, embedder):
+        lcfg = LongTermConfig(
+            enabled=True,
+            similarity_threshold=0.6,
+            recency_decay_rate=0.0,
+            hit_count_weight=0.0,
+            max_entries=5,
+        )
+        kcfg = KnowledgeConfig(enabled=True, max_entries=5)
+        cfg = MemoryConfig(
+            enabled=True,
+            short_term=ShortTermConfig(max_full_rounds=10),
+            long_term=lcfg,
+            knowledge=kcfg,
+        )
+        return MemoryManager(storage, embedder, cfg)
+
+    async def test_l2_empty_triggers_knowledge(self, storage, embedder):
+        mgr = self._mgr(storage, embedder)
+        mgr.add_knowledge(
+            "api:db-tips", "database connection pool sizing and throughput guide", {}
+        )
+        msgs = [{"role": "user", "content": "database pool config"}]
+        context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
+        assert "## Project Knowledge" in context
+
+    async def test_l2_hit_suppresses_knowledge(self, storage, embedder):
+        mgr = self._mgr(storage, embedder)
+        mgr.add_knowledge(
+            "api:db-tips", "database connection pool sizing and throughput guide", {}
+        )
+        await mgr.store(
+            "user_a:111",
+            "tune database connection pool settings",
+            ["src/db/pool.py"],
+            DB_DIFF,
+            "h1",
+        )
+        msgs = [{"role": "user", "content": "database pool config"}]
+        context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
+        assert "## Relevant Past Changes" in context
+        assert "## Project Knowledge" not in context
+
+
+class TestV1ToV2Migration:
+    def test_migrated_chunks_retrievable(self, tmp_path, embedder):
+        import sqlite3
+
+        from live_edit.storage import SQLiteStorage
+
+        db_path = str(tmp_path / "migrate.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                request TEXT NOT NULL,
+                files_json TEXT NOT NULL DEFAULT '[]',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                commit_hash TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                file_path TEXT DEFAULT '',
+                embedding BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.commit()
+        db_vec = _vec_bytes([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # db topic, dim 8
+        conn.execute(
+            "INSERT INTO session_embeddings (session_id, request, files_json, embedding) "
+            "VALUES (?, ?, ?, ?)",
+            ("user_a:legacy", "database connection pool tuning", '["src/db/pool.py"]', db_vec),
+        )
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteStorage(db_path)
+        ltm = LongTermMemory(
+            storage, embedder, LongTermConfig(enabled=True, similarity_threshold=0.6)
+        )
+        results = ltm.retrieve_sync("connection pool settings")
+        assert any(e.session_id == "user_a:legacy" for e in results)
+        payload = json.loads(storage.query_chunks()[0][5])
+        assert payload.get("migrated") is True
+```
+
+- [ ] **Step 2: Run the full new suite**
+
+Run: `python3 -m pytest tests/test_cross_session_memory.py -v`
+Expected: all tests pass (≈ 30).
+
+- [ ] **Step 3: Run the full project suite**
+
+Run: `python3 -m pytest -q`
+Expected: green (existing + new). If a pre-existing unrelated test fails, do not "fix" production code — report it.
+
+- [ ] **Step 4: Verify the branch-targeted coverage gate**
+
+Run: `python3 -m pytest tests/test_cross_session_memory.py tests/test_long_term.py tests/test_memory_manager.py tests/test_session_memory.py tests/test_rag_eval.py tests/test_storage.py -q --cov=live_edit.memory --cov-report=term-missing`
+Expected: the following `live_edit/memory.py` branches are now non-zero (spec success criteria): L3 fallback + L2/L3 mutual exclusion (~825-856, 978-985), v1→v2 migration via `_migrate_v1_session_embeddings` (~232-299), store-failure graceful path (~380-381, best-effort — if not hit, note it, do not force), `_format_memory_context` default branch (~943-957).
+
+- [ ] **Step 5: Lint the new file**
+
+Run: `python3 -m ruff check tests/test_cross_session_memory.py`
+Expected: no errors. Fix any reported issues in the test file only.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/test_cross_session_memory.py
+git commit -m "test(memory): scoring, formatting, eviction, robustness, side effects, L3, migration"
+```
+
+---
+
+## Self-Review
+
+Checked against spec `2026-08-06-cross-session-memory-functional-tests-design.md`:
+
+- **Spec coverage:** Group 1 → TestCrossUserRecall (3 cases incl. same-topic A/B coexist, threshold pinned); Group 2 → TestCrossUserTopicFiltering; Group 3 → TestScoring (6 cases: below-threshold, decay, hit-cap, max_entries, top-2, file_diff-via-file_path; hit-count side-effect isolated per test via fresh fixtures); Group 4 → TestContinuation (parent-table count); Group 5 → TestStoreBehavior (incl. async pattern, non-rename diffs); Group 6 → TestContextFormatting (default template, clamp, disclaimer); Group 7 → TestEviction (sleep after every store); Group 8 → TestDisabledSwitch (MemoryConfig master switch, tuple return); Group 9 → TestRobustness (forced brute-force via monkeypatch, malformed-row precondition, empty DB/query); Group 10 → TestRetrievalSideEffect (pinned chunk id); Group 11 → TestL3FallbackAndMutualExclusion (both directions); Group 12 → TestV1ToV2Migration. All 12 groups covered.
+- **Placeholder scan:** every step contains concrete code or a concrete command; no TBD/TODO.
+- **Type consistency:** `LongTermMemory.store`/`retrieve_sync`, `MemoryManager.store`/`retrieve_sync`/`add_knowledge`, `SQLiteStorage.query_chunks` column order (index 3 = chunk_type, 0 = id, 5 = payload_json, 8 = hit_count, 9 = last_accessed) are used consistently across tasks; config field names match `live_edit/config.py` (`hit_count_weight`, `max_stored_entries`, `memory_prompt_template`, `knowledge_dir`).
