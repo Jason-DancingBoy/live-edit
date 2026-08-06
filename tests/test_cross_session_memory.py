@@ -551,6 +551,17 @@ class TestL3FallbackAndMutualExclusion:
         context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
         assert "## Project Knowledge" in context
 
+    async def test_l2_empty_triggers_knowledge_async(self, storage, embedder):
+        mgr = self._mgr(storage, embedder)
+        mgr.add_knowledge(
+            "api:db-tips", "database connection pool sizing and throughput guide", {}
+        )
+        msgs = [{"role": "user", "content": "database pool config"}]
+        context, _ = await mgr.retrieve(
+            "database pool config", "user_b:222", msgs, round_num=1
+        )
+        assert "## Project Knowledge" in context
+
     async def test_l2_hit_suppresses_knowledge(self, storage, embedder):
         mgr = self._mgr(storage, embedder)
         mgr.add_knowledge(
