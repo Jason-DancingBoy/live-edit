@@ -19,10 +19,13 @@ def diff_text(old: str, new: str, filename: str = "") -> str:
 
 
 def _read_or_empty(path: str) -> str:
-    if not os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
         return ""
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+    except UnicodeDecodeError:
+        return ""
 
 
 def compute_write_diff(tool_name: str, args: dict, project_root: str) -> str:
