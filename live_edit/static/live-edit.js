@@ -623,11 +623,52 @@
           <div class="le-event-text">${escapeHtml(msg)}</div>
           ${entry.commit_hash ? '<div style="font-size:11px;color:var(--le-text-muted)">' + entry.commit_hash + "</div>" : ""}
         `;
+        if (entry.commit_hash && entry.is_live_edit) {
+          const btn = document.createElement("button");
+          btn.className = "le-btn le-btn-danger le-revert-btn";
+          btn.textContent = "撤销";
+          btn.addEventListener("click", () => confirmRevert(entry.commit_hash, entry.message));
+          el.appendChild(btn);
+        }
         tl.appendChild(el);
       }
     } catch (e) {
       removeEvent("thinking_started");
       addError("加载历史失败: " + e.message);
+    }
+  }
+
+  async function confirmRevert(commitHash, message) {
+    if (!window.confirm("撤销这次修改？\n\n" + (message || "") + "\n\n这会回滚到该提交之前的 live-edit 改动。")) {
+      return;
+    }
+    try {
+      const previewResp = await fetch(API_PREFIX + "/revert/" + commitHash + "/preview", {
+        method: "POST",
+      });
+      const preview = await previewResp.json();
+      if (!preview.ok) {
+        window.alert("撤销检查失败: " + (preview.error || "未知错误"));
+        return;
+      }
+      if (!preview.can_revert) {
+        window.alert("无法自动撤销：存在冲突。\n" + (preview.error || ""));
+        return;
+      }
+      const detail = preview.diff_summary ? "\n\n影响文件:\n" + preview.diff_summary : "";
+      if (!window.confirm("确认撤销？" + detail)) return;
+      const execResp = await fetch(API_PREFIX + "/revert/" + commitHash + "/execute", {
+        method: "POST",
+      });
+      const result = await execResp.json();
+      if (result.ok) {
+        window.alert("已成功撤销。");
+        showTimeline();
+      } else {
+        window.alert("撤销失败: " + (result.error || "未知错误"));
+      }
+    } catch (e) {
+      window.alert("撤销请求失败: " + e.message);
     }
   }
 

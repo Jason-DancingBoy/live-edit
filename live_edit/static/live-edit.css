@@ -424,3 +424,9 @@
   margin-right: 4px;
   opacity: 0.9;
 }
+
+.le-revert-btn {
+  margin-top: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
