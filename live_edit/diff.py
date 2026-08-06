@@ -1,9 +1,9 @@
 """Unified-diff helpers for previewing write operations before approval."""
 
 import difflib
-import os
 
 from .builtin_tools.edit_file import apply_edit
+from .safety import safe_path
 
 
 def diff_text(old: str, new: str, filename: str = "") -> str:
@@ -37,7 +37,10 @@ def compute_write_diff(tool_name: str, args: dict, project_root: str) -> str:
     path = (args.get("path") or "").strip()
     if not path:
         return ""
-    abs_path = os.path.join(project_root, path)
+    try:
+        abs_path = safe_path(path, project_root)
+    except ValueError:
+        return ""
     current = _read_or_empty(abs_path)
 
     if tool_name == "edit_file":

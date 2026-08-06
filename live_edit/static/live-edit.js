@@ -576,11 +576,14 @@
   async function batchApprove(enabled) {
     if (!currentSessionId) return;
     try {
-      await fetch(API_PREFIX + "/approve/" + currentSessionId + "/batch", {
+      const resp = await fetch(API_PREFIX + "/approve/" + currentSessionId + "/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
+      if (!resp.ok) {
+        console.error("live-edit: batch approve failed with " + resp.status);
+      }
     } catch (e) {
       console.error("live-edit: batch approve error", e);
     }
