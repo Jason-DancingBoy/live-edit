@@ -468,9 +468,13 @@
     const card = document.createElement("div");
     card.className = "le-tool-card";
     card.dataset.toolId = event.id;
+    const diffHtml = event.preview_diff
+      ? `<details class="le-tool-diff"><summary>查看改动</summary><div class="le-diff-content">${renderDiff(event.preview_diff)}</div></details>`
+      : "";
     card.innerHTML = `
       <div class="le-tool-summary">${escapeHtml(event.summary || event.tool)}</div>
       ${event.reason ? '<div class="le-tool-detail">原因: ' + escapeHtml(event.reason) + "</div>" : ""}
+      ${diffHtml}
       <div class="le-tool-actions">
         <button class="le-btn le-btn-danger le-reject-btn">拒绝</button>
         <button class="le-btn le-btn-primary le-approve-btn">批准</button>

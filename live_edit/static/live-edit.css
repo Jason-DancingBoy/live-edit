@@ -404,3 +404,18 @@
 .le-eval-dot.failed { background: #f44336; }
 .le-eval-error { color: #f44336; font-size: 12px; }
 .le-eval-retry { color: #ff9800; font-size: 12px; padding: 2px 0; }
+
+/* Quick-mode approval card: collapsible preview diff */
+.le-tool-card details.le-tool-diff {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.le-tool-card details.le-tool-diff summary {
+  cursor: pointer;
+  color: var(--le-text-muted);
+  margin-bottom: 4px;
+}
+.le-tool-card details.le-tool-diff .le-diff-content {
+  max-height: 200px;
+  overflow: auto;
+}
