@@ -163,6 +163,7 @@ class EditSession:
         self._worktree_path: str = ""
         self._merged: bool = False
         self._cancelled = asyncio.Event()
+        self._auto_approve: bool = False
         self._preview_url: str = ""
         self._cached_diff: str = ""
         self._session_memory = None
@@ -180,6 +181,11 @@ class EditSession:
         """Send tool_plan event and wait for frontend to call approve endpoint."""
         self._approve_event.clear()
         self._approve_result = None
+        if self._auto_approve:
+            self.queue.put_nowait(
+                {"type": "tool_plan", "id": tool_id, "auto": True, **tool_data}
+            )
+            return {"approved": True, "auto": True}
         self.queue.put_nowait({"type": "tool_plan", "id": tool_id, **tool_data})
         try:
             await asyncio.wait_for(self._approve_event.wait(), timeout=timeout)
@@ -194,6 +200,10 @@ class EditSession:
         self._approve_result = {"approved": False, "reason": "用户取消了操作"}
         self._approve_event.set()
         self.emit("cancelled", message="会话已取消")
+
+    def set_auto_approve(self, active: bool) -> None:
+        """When True, all subsequent write tools in this session auto-approve."""
+        self._auto_approve = active
 
     def approve(self, tool_id: str, approved: bool):
         """Called by the approve endpoint to unblock the session."""
