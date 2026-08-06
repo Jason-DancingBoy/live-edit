@@ -23,6 +23,8 @@ This spec adds one new functional test file that closes those gaps.
 - No coverage of the legacy `session_memory.SessionMemory` class (kept for backward compat; the current engine path is `MemoryManager → LongTermMemory`).
 - No real-model (sentence-transformers) download in CI. Real-model eval stays a manual opt-in (`tests/test_rag_eval.py::run_real_eval`).
 - No production code changes. This is a test-only addition.
+- sqlite-vec-only paths that cannot run in the no-vec CI env (`coarse_recall_limit` truncation, vec orphan rows, vec whole-session-drop) are documented as vec-only and exempt from CI assertions.
+- `LongTermMemory`'s own `enabled=False` early return (memory.py:311, 394) is low-priority / optional — group 8 covers the `MemoryManager` master switch.
 
 ## Architecture
 
@@ -30,7 +32,7 @@ This spec adds one new functional test file that closes those gaps.
 tests/test_cross_session_memory.py   (new)
 ├── TopicFakeEmbedder                 semantically discriminative, deterministic
 ├── fixtures                          storage(tmp_path), topic_embedder, ltm(config)
-└── 10 test groups / ~35 cases
+└── 12 test groups / ~40 cases
 ```
 
 ### TopicFakeEmbedder (test-local asset)
@@ -40,6 +42,8 @@ Deterministic embeddings that let cosine similarity actually separate "similar" 
 - A fixed set of topics, each mapped to an orthogonal basis direction vector (dimension configurable, default 8):
   `auth, bugfix, db, style, docs, ratelimit` (same topic set as `tests/test_rag_eval.py`; **deliberate deviation** — unknown text maps to an independent `other` vector, not test_rag_eval.py:259's fallback-to-`auth`).
 - `embed(text)`: classify text by keyword matches into a topic → return that topic's direction vector, with a small per-text deterministic perturbation (seeded by text hash) so different texts on the same topic still have cosine slightly < 1.0.
+- **Perturbation magnitude is pinned**: any two same-topic texts differ in cosine by **< 0.05** — this makes the −0.05 tiebreak at memory.py:552 decisive for the group-3 `file_diff`-over-`request` assertion (otherwise a request chunk's higher bare cosine could outrank the file_diff).
+- **Topic classification is deterministic**: topics scanned in fixed order, longest-keyword-match first (mirrors `_topic` in test_rag_eval.py:253-259); every text maps to exactly one topic.
 - Text with no topic keyword maps to a distinct "other" vector orthogonal to all topics → retrieves nothing against real topics.
 - `embed_batch` delegates to `embed`; `dimension` returns the configured dim.
 
@@ -72,12 +76,14 @@ Guarantees: same input → same vector (hash-seeded); same topic → high cosine
 | 2 | Cross-user visibility & topic filtering | A and B store different topics in one DB; B's query recalls only relevant topic, across users | no wrong-topic entries in results; relevant topic present |
 | 3 | Scoring behavior | below-threshold filtering; recency decay lowers old scores; hit-count bonus + 10 cap; `max_entries` truncation; per-session top-2 grouping; `file_diff` retained over `request` | cross-topic (cosine≈0) not recalled — **no exact-0.6 boundary construction** (hash perturbation makes it non-constructible); old chunk score significantly lower (decay test writes old `last_accessed` via SQL); hit bonus within cap; per-session ≤2; **`file_diff`-vs-`request` inferred via non-empty `file_path`** (MemoryEntry has no `chunk_type`) — store 1 request + 2 file_diff and assert the 2 retained are the file_diffs (global re-sort at memory.py:568 by bare score hides the −0.05 tiebreak otherwise); **reset/isolate hit counts between assertions** (retrieve triggers `update_chunk_hit_counts`, drifting scores) |
 | 4 | Continuation semantics | re-store same session atomically replaces old chunks (no duplication); continuation recalls its own history | **parent-table** chunk count unchanged after re-store — the only assertion valid in the no-vec CI env (vec orphan-row behavior exists only when sqlite-vec is installed; guard any vec assertion with `pytest.skipif` on vec absence); own session retrievable |
-| 5 | Store behavior | 1 request chunk + N file_diff chunks per modified file; empty diff → request-only; binary diff skipped | chunk_type counts exact; **store is async** (`asyncio.run` or `MemoryManager.store_sync`); diffs must match `_split_diff_by_file` parsing (`+++ b/`, `Binary files `, empty); **rename chunks take the `from` path as `file_path` — use non-rename diffs** |
+| 5 | Store behavior | 1 request chunk + N file_diff chunks per modified file; empty diff → request-only; binary diff skipped | chunk_type counts exact; **async call pattern pinned** (pytest `asyncio_mode="auto"`): async test functions `await` `store(...)` directly; sync test functions wrap in `asyncio.run(...)` — **never call `store_sync` from an async test** (it spawns a fire-and-forget `create_task`, a race); diffs must match `_split_diff_by_file` parsing (`+++ b/`, `Binary files `, empty); **rename chunks take the `from` path as `file_path` — use non-rename diffs** |
 | 6 | Context formatting | `_format_memory_context` fields, "reference only" disclaimer, score clamped ≤100% | output contains disclaimer + fields; percent ≤ 100%; uses the default branch (requires `memory_prompt_template=""` — the default) |
 | 7 | Eviction | `max_stored_entries` evicts oldest sessions | evicted session's chunks gone, newest retained; eviction runs after **every** store and sorts by `MIN(created_at)` (second-granular) — **`sleep(1.1)` after every store** to avoid same-second ties (not just before the newest) |
 | 8 | Disabled switch | `MemoryConfig(enabled=False)` master switch → store & retrieve no-op | no chunks written to `session_chunks`; `MemoryManager.retrieve` returns `("", messages)` (empty context, unchanged messages) — **use the master switch**, not `LongTermConfig.enabled` alone (two distinct switches) |
 | 9 | Robustness | malformed embedding row skipped (not crash); empty DB; brute-force fallback | **force brute-force** (monkeypatch `query_chunks_vec → None`); malformed row skipped and others still returned — holds only when the malformed row entered via `store_chunks` (its single per-session vec INSERT is atomic, so the vec path silently drops the whole session; that path is untestable without sqlite-vec); empty query / empty DB safe |
-| 10 | Retrieval side effect | retrieve bumps `hit_count` and refreshes `last_accessed` on matched chunks (via `update_chunk_hit_counts`, storage.py:607) | after a retrieve, matched chunk's `hit_count` incremented and `last_accessed` non-null (read back via `query_chunks`) |
+| 10 | Retrieval side effect | retrieve bumps `hit_count` and refreshes `last_accessed` on matched chunks (via `update_chunk_hit_counts`, storage.py:607) | assert on a **specific pinned chunk id** — the bump applies to all over-threshold chunks, not only returned ones; read back via `query_chunks` and check that id's `hit_count` incremented and `last_accessed` non-null |
+| 11 | L3 knowledge fallback & L2/L3 mutual exclusion | L2 empty/disabled → knowledge context present; L2 hit → no knowledge section (memory.py:850-853) | seed `knowledge_chunks` on one topic; with L2 disabled or no L2 match, `retrieve` context contains a `## Project Knowledge` section; with an L2 hit, the section is absent |
+| 12 | v1→v2 migration via `LongTermMemory` | legacy `session_embeddings` rows survive migration into `session_chunks` (memory.py:232-299) | pre-insert a v1 row into `session_embeddings`, construct `LongTermMemory` over real `SQLiteStorage`, assert retrieval returns the migrated request chunk (`migrated=true`) |
 
 ## Error Handling & Robustness
 
@@ -90,7 +96,11 @@ Guarantees: same input → same vector (hash-seeded); same topic → high cosine
 
 - New suite passes in CI with no model download; deterministic, no network.
 - No conflicts with existing tests; new topic-based embedder is additive.
-- Line coverage of `live_edit/memory.py` reaches **≥ 60%** (the repo's own `fail_under`) when the new suite runs alongside the existing memory tests — current baseline with existing memory tests alone is **42%** (measured 2026-08-06), so the suite must add the L2 branches it targets. Verified via `pytest --cov=live_edit.memory --cov-report=term-missing`.
+- **Branch-targeted coverage gate** — a blanket global % is not the gate (a broad memory-test run already exceeds the repo's `fail_under=60`; measured 2026-08-06). Instead the suite must bring these currently-uncovered `live_edit/memory.py` branches to **non-zero** coverage, verified via `pytest --cov=live_edit.memory --cov-report=term-missing`:
+  - L3 fallback + L2/L3 mutual exclusion (memory.py:825-856, 978-985) — group 11
+  - v1→v2 migration through `LongTermMemory._migrate_v1_session_embeddings` (memory.py:232-299) — group 12
+  - store-failure graceful path (memory.py:380-381)
+  - `_format_memory_context` default branch (memory.py:943-957) — group 6
 - Full suite (`pytest`) stays green.
 
 ## Implementation Approach (per repo CLAUDE.md dual-agent mode)
