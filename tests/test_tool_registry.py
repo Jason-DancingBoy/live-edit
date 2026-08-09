@@ -2,6 +2,8 @@
 
 import pytest
 
+from live_edit import tool_registry as tr
+from live_edit.router import setup_live_edit
 from live_edit.tool_registry import DefaultToolRegistry, ToolDef
 
 
@@ -129,3 +131,84 @@ def test_visible_in_mode():
     assert td_all.visible_in_mode("deep") is True
     assert td_deep.visible_in_mode("quick") is False
     assert td_deep.visible_in_mode("deep") is True
+
+
+def test_plugin_tools_register_when_global_registry_set(tmp_path):
+    """@tool decorators register during load_plugin_tools only if the global
+    registry is already set — the ordering contract router.py must honor."""
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "my_plugin.py").write_text(
+        "from live_edit.tool_registry import tool\n"
+        "@tool(name='plugin_echo', description='plugin echo', modes=None, is_write=False)\n"
+        "async def plugin_echo(args, project_root, config=None):\n"
+        "    return {'ok': True, 'echo': 'from-plugin'}\n"
+    )
+    registry = DefaultToolRegistry()
+    old = tr._global_registry
+    tr.set_global_registry(registry)
+    try:
+        registry.load_plugin_tools(str(plugin_dir))
+        tool = registry.get_tool("plugin_echo")
+        assert tool is not None, "@tool plugin was not registered"
+        assert tool.priority == 30
+    finally:
+        tr.set_global_registry(old)
+
+
+def _write_config(tmp_path):
+    cfg = tmp_path / ".live-edit.toml"
+    cfg.write_text(
+        """[project]
+name = "TestApp"
+language = "python"
+root = "."
+
+[llm]
+provider = "anthropic_compatible"
+api_url = "https://api.example.com/v1/messages"
+api_key_env = "FAKE_KEY"
+model = "test-model"
+
+[sessions]
+max_active = 10
+
+[modes.quick]
+label = "快速修改"
+approval = "per_tool"
+tools = "write"
+
+[modes.quick.prompt]
+base = "You are a helpful AI."
+"""
+    )
+    return str(cfg)
+
+
+def test_setup_live_edit_loads_plugins_from_live_edit_tools(tmp_path):
+    """Regression: setup_live_edit must register plugins from
+    <project_root>/live_edit_tools. Previously set_global_registry ran after
+    load_plugin_tools, so @tool decorators hit a None global and silently no-op'd."""
+    tools_dir = tmp_path / "live_edit_tools"
+    tools_dir.mkdir()
+    (tools_dir / "git_status.py").write_text(
+        "import subprocess\n"
+        "from live_edit.tool_registry import tool\n"
+        "@tool(name='git_status', description='git status', modes=None, is_write=False)\n"
+        "async def git_status(args, project_root, config=None):\n"
+        "    return {'ok': True, 'exit_code': 0}\n"
+    )
+    _write_config(tmp_path)
+    from live_edit import tools as tools_module
+
+    old = tr._global_registry
+    old_tools_registry = tools_module._registry
+    try:
+        setup_live_edit(project_root=str(tmp_path), config_path=".live-edit.toml")
+        assert tr._global_registry is not None
+        tool = tr._global_registry.get_tool("git_status")
+        assert tool is not None, "plugin tool missing from registry after setup"
+        assert tool.priority == 30
+    finally:
+        tr.set_global_registry(old)
+        tools_module._set_registry(old_tools_registry)

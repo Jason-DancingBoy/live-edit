@@ -152,9 +152,11 @@ def setup_live_edit(
         tool_registry = DefaultToolRegistry()
         tool_registry.load_builtin_tools()
         tool_registry.load_toml_tools(config)
+        # Global registry must be set before plugin modules are imported: the
+        # @tool decorator registers into _global_registry at module import time.
+        set_global_registry(tool_registry)
         plugin_dir = os.path.join(project_root, "live_edit_tools")
         tool_registry.load_plugin_tools(plugin_dir)
-        set_global_registry(tool_registry)
 
     from .tools import _set_registry
 
