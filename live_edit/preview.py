@@ -92,7 +92,7 @@ class PreviewManager:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 cwd=worktree_path,
-                env=os.environ,
+                env=dict(os.environ),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
