@@ -258,8 +258,50 @@ class TestCleanupStaleWorktrees:
             capture_output=True,
             text=True,
         ).stdout.strip()
-        assert branches == ""
+        # The branch must survive cleanup: it is the mergeable deliverable an
+        # admin merges into main days later (previously cleanup deleted it).
+        assert branches != ""
         vcs.discard_session_branch("sess-fresh", worktree_path=fresh)
+
+    def test_cleanup_keeps_committed_branch_for_admin_merge(self, git_repo):
+        """Regression: a committed session's branch must survive stale-worktree
+        cleanup so admin merge still works days later. Previously the cleanup
+        called discard_session_branch and deleted the branch."""
+        vcs = GitVCS(str(git_repo), worktree_ttl=86400)
+        wt = vcs.create_worktree("sess-committed")
+        # Commit real work to the session branch (mirrors _do_commit).
+        with open(os.path.join(wt, "file.txt"), "w") as fh:
+            fh.write("content")
+        subprocess.run(
+            ["git", "-C", wt, "add", "file.txt"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", wt, "commit", "-m", "live-edit: session work"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # Backdate past the TTL like an idle preview-kept worktree.
+        old = time.time() - 2 * 86400
+        os.utime(wt, (old, old))
+
+        vcs.cleanup_stale_worktrees(ttl_seconds=86400)
+
+        # Worktree dir reclaimed…
+        assert not os.path.isdir(wt)
+        # …but the branch survives for admin merge…
+        branches = subprocess.run(
+            ["git", "-C", str(git_repo), "branch", "--list", "live-edit/sess-committed"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branches != ""
+        # …and it is still unmerged, i.e. mergeable via the admin endpoint.
+        unmerged = vcs.list_unmerged_branches()
+        assert "sess-committed" in {b.get("session_id") for b in unmerged}
 
     def test_removes_stale_orphan_dir(self, git_repo, tmp_path, monkeypatch):
         import live_edit.vcs as vcs_mod

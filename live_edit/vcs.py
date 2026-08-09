@@ -221,7 +221,9 @@ class GitVCS(VCS):
                 continue  # fresh crash — keep for recovery
             if path in registered:
                 try:
-                    self.discard_session_branch(name, worktree_path=path)
+                    # Remove the dir only; keep live-edit/<session_id> so a
+                    # committed session stays mergeable via the admin UI.
+                    self.remove_worktree_dir(path, name)
                     logger.info("Cleaned up stale worktree: %s", path)
                 except Exception as e:
                     logger.warning("Failed to remove registered worktree %s: %s", path, e)
