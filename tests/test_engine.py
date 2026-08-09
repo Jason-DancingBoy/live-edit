@@ -1479,6 +1479,84 @@ class TestRehydrateSession:
 
         assert rehydrate_session("s-empty", {"request": "x", "messages": []}) is None
 
+    @pytest.mark.asyncio
+    async def test_continue_recovered_committed_session_keeps_branch(self, tmp_path, monkeypatch):
+        """Regression: a committed session recovered via /continue that ends
+        without a new commit must keep its branch. Previously the finally block
+        discarded it because rehydrate resets _merged, losing the committed work."""
+        import live_edit.vcs as vcs_mod
+        from live_edit.engine import continue_edit_session, rehydrate_session
+        from live_edit.tool_registry import DefaultToolRegistry
+
+        repo = str(tmp_path)
+        subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
+        (tmp_path / "initial.txt").write_text("initial")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, capture_output=True, check=True)
+
+        monkeypatch.setattr(vcs_mod, "_WORKTREE_ROOT", str(tmp_path / "wt-root"))
+        vcs = vcs_mod.GitVCS(repo)
+        sid = "s-committed-recover"
+        wt = vcs.create_worktree(sid)
+        # Commit real work to the session branch (mirrors a completed _do_commit).
+        (Path(wt) / "work.txt").write_text("done")
+        subprocess.run(["git", "-C", wt, "add", "work.txt"], capture_output=True, text=True, check=True)
+        subprocess.run(
+            ["git", "-C", wt, "commit", "-m", "live-edit: session work"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        detail = {
+            "request": "original",
+            "mode": "quick",
+            "committed": 1,
+            "commit_hash": commit_hash,
+            "files": ["work.txt"],
+            "messages": [{"role": "user", "content": "do the work"}],
+        }
+        session = rehydrate_session(sid, detail)
+        assert session is not None
+        assert session._committed is True
+
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+        config = _make_test_config()
+        registry = DefaultToolRegistry()
+        registry.load_builtin_tools()
+        provider = FakeProvider([[{"type": "text", "text": "x" * 300}]])
+        mock_storage = MagicMock()
+
+        await continue_edit_session(
+            session=session,
+            new_request="actually nothing",
+            provider=provider,
+            vcs=vcs,
+            storage=mock_storage,
+            config=config,
+            mode="quick",
+            session_store=store,
+            tool_registry=registry,
+        )
+
+        branches = subprocess.run(
+            ["git", "-C", repo, "branch", "--list", f"live-edit/{sid}"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branches != ""
+        # Worktree dir should be reclaimed while the branch is kept.
+        assert not os.path.isdir(wt)
+
+        # Cleanup the branch the test created.
+        vcs.discard_session_branch(sid)
+
 
 class TestRollbackAudit:
     @pytest.mark.asyncio

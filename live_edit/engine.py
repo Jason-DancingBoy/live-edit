@@ -1233,10 +1233,16 @@ async def run_edit_session(
                 audit_log.record(
                     "preview_stop", target=session.id, session_id=session.id, result="stopped"
                 )
-        # Clean up worktree if not merged/removed yet (e.g. exception before commit)
+        # Clean up worktree if not merged/removed yet (e.g. exception before
+        # commit). A committed session's deliverable lives on live-edit/<sid>;
+        # recover it via /continue without a new commit must NOT delete that
+        # branch, so remove only the dir and keep the branch for admin merge.
         if not session._merged and session._worktree_path:
             try:
-                vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
+                if session._committed:
+                    vcs.remove_worktree_dir(session._worktree_path, session.id)
+                else:
+                    vcs.discard_session_branch(session.id, worktree_path=session._worktree_path)
                 session._merged = True
             except Exception:
                 pass
