@@ -77,6 +77,17 @@ class TestDeleteFile:
         assert result["ok"] is False
         assert "不存在" in result["error"]
 
+    async def test_delete_blocked_when_no_head_commit(self, tmp_path):
+        # Regression (I1): repo with git init but NO commit (no HEAD yet) —
+        # git ls-tree exits 128 with empty stdout. Policy must be conservative
+        # (protected), NOT collapse to allow-all. Note: _init_git would create
+        # HEAD via --allow-empty; do not use it here.
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
+        (tmp_path / "notes.txt").write_text("hi")
+        result = await df.execute({"path": "notes.txt"}, str(tmp_path), FakeConfig())
+        assert result["ok"] is False
+        assert (tmp_path / "notes.txt").exists()
+
     async def test_delete_directory_refused(self, tmp_path):
         _init_git(tmp_path)
         (tmp_path / "adir").mkdir()

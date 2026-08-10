@@ -12,6 +12,11 @@ def _exists_in_head(project_root: str, rel_path: str) -> bool:
 
     Files NOT in HEAD were created this session (or are untracked) and are
     deletable; committed files are treated as protected source.
+
+    Conservative protection on git errors: a non-zero exit (e.g. a repo with no
+    HEAD commit yet, or a non-git directory) makes `git ls-tree` exit 128 with
+    empty stdout, which would otherwise look like "not in HEAD" and collapse the
+    policy to allow-all. We therefore treat any non-zero exit as protected.
     """
     try:
         result = subprocess.run(
@@ -20,6 +25,8 @@ def _exists_in_head(project_root: str, rel_path: str) -> bool:
             text=True,
             timeout=10,
         )
+        if result.returncode != 0:
+            return True  # conservative: on git error, treat as pre-existing
         return bool(result.stdout.strip())
     except Exception:
         return True  # conservative: on git error, treat as pre-existing

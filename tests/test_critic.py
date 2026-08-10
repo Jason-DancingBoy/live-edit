@@ -11,6 +11,7 @@ from live_edit.critic import (
     _parse_verdict_text,
     run_critic_agent,
 )
+from live_edit.tool_registry import DefaultToolRegistry
 
 
 class FakeProvider:
@@ -103,6 +104,16 @@ class TestBuildCriticTools:
     def test_none_registry_returns_empty(self):
         assert _build_critic_tools(None) == []
 
+    def test_real_toolset_is_read_only_allowlist(self):
+        # Regression (C1): the critic toolset built from the REAL registry must
+        # be exactly the read-only allowlist — run_shell (which can mutate via
+        # mv/cp/echo >/sed -i even though is_write=False) must never leak in.
+        reg = DefaultToolRegistry()
+        reg.load_builtin_tools()
+        names = {t["name"] for t in _build_critic_tools(reg)}
+        assert names <= {"read_file", "search_code", "glob", "list_dir"}
+        assert not (names & {"run_shell", "write_file", "edit_file", "delete_file"})
+
 
 class TestParseVerdictText:
     def test_plain_json(self):
@@ -119,6 +130,33 @@ class TestParseVerdictText:
     def test_invalid_raises_value_error(self):
         with pytest.raises(ValueError):
             _parse_verdict_text("not json at all")
+
+    def test_goal_achieved_false_string(self):
+        # Regression (M1): "false" string must parse to False, not truthy.
+        v = _parse_verdict_text(
+            json.dumps({"goal_achieved": "false", "summary": "s", "findings": []})
+        )
+        assert v.goal_achieved is False
+
+    def test_goal_achieved_missing_defaults_true(self):
+        v = _parse_verdict_text(json.dumps({"summary": "s", "findings": []}))
+        assert v.goal_achieved is True
+
+    def test_severity_case_insensitive_blocking(self):
+        # Regression (M1): "High"/"CRITICAL" must be normalized to blocking.
+        v = _parse_verdict_text(
+            json.dumps(
+                {
+                    "goal_achieved": True,
+                    "summary": "s",
+                    "findings": [
+                        {"severity": "High", "file": "a.py", "description": "x"}
+                    ],
+                }
+            )
+        )
+        assert v.findings[0].severity == "high"
+        assert v.blocking is True
 
 
 @pytest.mark.asyncio

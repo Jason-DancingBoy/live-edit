@@ -9,6 +9,11 @@ logger = logging.getLogger("live-edit.critic")
 
 _BLOCKING_SEVERITIES = ("critical", "high")
 _DIFF_LIMIT = 4000
+# Explicit read-only allowlist for the critic agent. Whitelist, not subtractive:
+# write tools may mutate the codebase without the is_write/require_approval
+# flags (e.g. run_shell guards mutation via a command denylist), so a fresh-copy
+# denylist cannot be trusted for a reviewer. Only provably read-only tools.
+_READ_ONLY_TOOLS = {"read_file", "search_code", "glob", "list_dir"}
 
 
 @dataclass
@@ -31,16 +36,20 @@ class CriticVerdict:
 
 
 def _build_critic_tools(tool_registry) -> list[dict]:
-    """Read-only tool schemas: all qa-visible tools minus any write tool.
+    """Read-only tool schemas: an explicit allowlist of read-only tools.
 
-    qa-visible tools alone are NOT sufficient once a write tool declares
-    modes=None (all modes). Explicitly exclude write tools so the critic can
-    never mutate the codebase.
+    Whitelisting is required, not optional: subtractive filtering (all qa-visible
+    tools minus get_write_tool_names) is insufficient because the is_write /
+    require_approval flags only tag tools that declare themselves destructive.
+    run_shell mutates through a command denylist (safety.check_shell_cmd), not
+    through those flags, so subtraction lets it through and hands the critic an
+    unbounded shell (mv/cp/echo >/sed -i/python3 -c) with no approval gate —
+    defeating the invariant that the critic can never write. Only an explicit
+    allowlist of provably read-only tools is trustworthy for a reviewer.
     """
     if tool_registry is None:
         return []
-    write_names = tool_registry.get_write_tool_names("qa")
-    return [t for t in tool_registry.get_tools("qa") if t["name"] not in write_names]
+    return [t for t in tool_registry.get_tools("qa") if t["name"] in _READ_ONLY_TOOLS]
 
 
 def _build_critic_messages(user_request: str, diff: str) -> list[dict]:
@@ -70,7 +79,12 @@ def _build_critic_messages(user_request: str, diff: str) -> list[dict]:
 
 
 def _parse_verdict_text(text: str) -> CriticVerdict:
-    """Parse the model's text as JSON (stripping a markdown fence). Raises ValueError."""
+    """Parse the model's text as JSON (stripping a markdown fence).
+
+    May raise on malformed JSON (json.JSONDecodeError, a ValueError) or on a
+    wrong-shape payload (AttributeError/TypeError, e.g. a list instead of a
+    dict). Callers are expected to catch broadly.
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
@@ -84,14 +98,22 @@ def _parse_verdict_text(text: str) -> CriticVerdict:
     for item in data.get("findings", []):
         findings.append(
             CriticFinding(
-                severity=str(item.get("severity", "low")),
+                severity=str(item.get("severity", "low")).strip().lower(),
                 file=str(item.get("file", "")),
                 line=item.get("line"),
                 description=str(item.get("description", "")),
             )
         )
+    # Only truthy values mean achieved; "false"/"0"/"no"/"" normalize to False,
+    # missing defaults to True.
+    goal_achieved = str(data.get("goal_achieved", True)).strip().lower() not in (
+        "false",
+        "0",
+        "no",
+        "",
+    )
     return CriticVerdict(
-        goal_achieved=bool(data.get("goal_achieved", True)),
+        goal_achieved=goal_achieved,
         findings=findings,
         summary=str(data.get("summary", "")),
     )
@@ -178,8 +200,11 @@ async def run_critic_agent(
                 )
                 continue  # one correction round
 
-        # Execute read-only tools (tool_registry is non-None here: with tools=[],
-        # the model cannot emit tool_use).
+        # Execute read-only tools. With tools=[] a real provider cannot emit
+        # tool_use, but guard defensively: a tool_use with no registry must
+        # fail open (empty passing verdict), never raise.
+        if tool_uses and tool_registry is None:
+            return _empty_verdict("critic: tool registry unavailable")
         tool_results = []
         for tool in tool_uses:
             exec_result = await tool_registry.execute(
