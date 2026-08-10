@@ -12,6 +12,22 @@ import httpx
 
 logger = logging.getLogger("live-edit.evaluation")
 
+STAGE_ORDER = {"lint": 0, "test": 1, "preview": 2, "introspect": 3, "html_diff": 4}
+PREVIEW_STAGES = ("preview", "html_diff")
+
+
+def resolve_stages(config) -> list[str]:
+    """Effective stage list in canonical order; preview stages conditional on [preview].enabled."""
+    if config is None or not hasattr(config, "evaluation"):
+        return []
+    base = config.evaluation.stages
+    stages = set(base) & set(STAGE_ORDER)
+    if config.preview.enabled if hasattr(config, "preview") else False:
+        stages |= set(PREVIEW_STAGES)
+    else:
+        stages -= set(PREVIEW_STAGES)
+    return sorted(stages, key=STAGE_ORDER.__getitem__)
+
 
 class EvalStage(Enum):
     LINT = "lint"
@@ -26,6 +42,7 @@ class EvalResult:
     passed: bool
     stages_passed: list[str] = field(default_factory=list)
     stages_failed: list[str] = field(default_factory=list)
+    stages_skipped: list[str] = field(default_factory=list)
     report: str = ""
     retries_used: int = 0
     stage_details: dict = field(default_factory=dict)
@@ -102,7 +119,7 @@ async def _run_stage_test(project_root: str, config) -> dict:
 async def _run_stage_preview(preview_url: str) -> dict:
     health_url = f"{preview_url}/live-edit/health" if preview_url else ""
     if not health_url:
-        return {"ok": False, "output": "Preview URL not available"}
+        return {"ok": False, "skipped": True, "output": "Preview URL not available"}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(health_url)
@@ -195,7 +212,7 @@ async def _run_stage_html_diff(preview_url: str, pages: list[str]) -> dict:
 
 async def run_evaluation_pipeline(session, provider, config, preview_manager=None) -> EvalResult:
     """Run all evaluation stages, stop at first failure. No retry loop — that's in engine.py."""
-    stages = config.evaluation.stages if hasattr(config, "evaluation") else []
+    stages = resolve_stages(config)
     if not stages:
         return EvalResult(passed=True, report="Evaluation disabled")
 
@@ -215,6 +232,8 @@ async def run_evaluation_pipeline(session, provider, config, preview_manager=Non
     stage_details = {}
     failed_stage = None
     failed_output = ""
+    stages_passed: list[str] = []
+    stages_skipped: list[str] = []
 
     for stage_name in stages:
         if stage_name not in stage_runners:
@@ -225,7 +244,11 @@ async def run_evaluation_pipeline(session, provider, config, preview_manager=Non
         except Exception as e:
             result = {"ok": False, "output": str(e)}
         stage_details[stage_name] = result
-        if result.get("ok"):
+        if result.get("skipped"):
+            stages_skipped.append(stage_name)
+            session.emit("eval_stage", stage=stage_name, status="skipped")
+        elif result.get("ok"):
+            stages_passed.append(stage_name)
             session.emit("eval_stage", stage=stage_name, status="passed")
         else:
             session.emit(
@@ -239,11 +262,13 @@ async def run_evaluation_pipeline(session, provider, config, preview_manager=Non
             break
 
     if failed_stage is None:
-        session.emit("eval_complete", passed=True, report="所有检查通过")
+        skip_note = "（跳过: " + "、".join(stages_skipped) + "）" if stages_skipped else ""
+        session.emit("eval_complete", passed=True, report=f"所有检查通过{skip_note}")
         return EvalResult(
             passed=True,
-            stages_passed=list(stages),
-            report="所有检查通过",
+            stages_passed=stages_passed,
+            stages_skipped=stages_skipped,
+            report=f"所有检查通过{skip_note}",
             retries_used=0,
             stage_details=stage_details,
         )
@@ -251,13 +276,14 @@ async def run_evaluation_pipeline(session, provider, config, preview_manager=Non
     report_parts = []
     for s in stages:
         detail = stage_details.get(s, {})
-        status = "通过" if detail.get("ok") else "未通过"
+        status = "跳过" if detail.get("skipped") else "通过" if detail.get("ok") else "未通过"
         report_parts.append(f"- {s}: {status}")
     report = "评估未通过:\n" + "\n".join(report_parts)
 
     return EvalResult(
         passed=False,
-        stages_passed=[s for s in stages if stage_details.get(s, {}).get("ok")],
+        stages_passed=stages_passed,
+        stages_skipped=stages_skipped,
         stages_failed=[failed_stage],
         report=report,
         retries_used=0,
