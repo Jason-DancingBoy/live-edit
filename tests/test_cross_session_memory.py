@@ -273,24 +273,16 @@ class TestCrossUserTopicFiltering:
 
 class TestContinuation:
     async def test_restore_replaces_chunks(self, ltm, storage):
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
-        )
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
         count1 = len(storage.query_chunks())
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
-        )
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2")
         count2 = len(storage.query_chunks())
         assert count1 == 2  # 1 request + 1 file_diff
         assert count2 == 2  # replaced, not duplicated
 
     async def test_continuation_recalls_own_history(self, ltm):
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
-        )
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2"
-        )
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h2")
         results = ltm.retrieve_sync("add jwt auth")
         assert any(e.session_id.startswith("user_a:") for e in results)
 
@@ -349,9 +341,7 @@ class TestScoring:
 
     async def test_cross_topic_below_threshold_filtered(self, storage, embedder):
         ltm = self._ltm(storage, embedder, similarity_threshold=0.6)
-        await ltm.store(
-            "s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
-        )
+        await ltm.store("s1", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
         assert ltm.retrieve_sync("add dark mode theme to the UI") == []
 
     async def test_recency_decay_ranks_recent_first(self, storage, embedder):
@@ -384,7 +374,9 @@ class TestScoring:
     async def test_max_entries_truncation(self, storage, embedder):
         ltm = self._ltm(storage, embedder, max_entries=2)
         for i in range(3):
-            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+            await ltm.store(
+                f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}"
+            )
         assert len(ltm.retrieve_sync("add jwt auth")) == 2
 
     async def test_per_session_top_two(self, storage, embedder):
@@ -459,16 +451,16 @@ class TestEviction:
             LongTermConfig(enabled=True, similarity_threshold=0.6, max_stored_entries=3),
         )
         for i in range(4):
-            await ltm.store(f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}")
+            await ltm.store(
+                f"s{i}", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, f"h{i}"
+            )
             await asyncio.sleep(1.1)
         sids = {c[1] for c in storage.query_chunks()}
         assert sids == {"s1", "s2", "s3"}
 
 
 class TestRobustness:
-    async def test_malformed_row_skipped_under_brute_force(
-        self, storage, embedder, monkeypatch
-    ):
+    async def test_malformed_row_skipped_under_brute_force(self, storage, embedder, monkeypatch):
         ltm = LongTermMemory(
             storage,
             embedder,
@@ -476,9 +468,7 @@ class TestRobustness:
         )
         # Force the brute-force path (sqlite-vec not installed anyway).
         monkeypatch.setattr(storage, "query_chunks_vec", lambda *a, **k: None)
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
-        )
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
         storage.store_chunks(
             "user_b:bad",
             "h-bad",
@@ -513,9 +503,7 @@ class TestRetrievalSideEffect:
             embedder,
             LongTermConfig(enabled=True, similarity_threshold=0.6),
         )
-        await ltm.store(
-            "user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1"
-        )
+        await ltm.store("user_a:111", "implement JWT token auth", ["src/auth.py"], AUTH_DIFF, "h1")
         rows_before = storage.query_chunks()
         pinned = rows_before[0][0]  # chunk id
         assert rows_before[0][8] == 0  # hit_count
@@ -548,29 +536,21 @@ class TestL3FallbackAndMutualExclusion:
 
     async def test_l2_empty_triggers_knowledge(self, storage, embedder):
         mgr = self._mgr(storage, embedder)
-        mgr.add_knowledge(
-            "api:db-tips", "database connection pool sizing and throughput guide", {}
-        )
+        mgr.add_knowledge("api:db-tips", "database connection pool sizing and throughput guide", {})
         msgs = [{"role": "user", "content": "database pool config"}]
         context, _ = mgr.retrieve_sync("database pool config", "user_b:222", msgs, round_num=1)
         assert "## Project Knowledge" in context
 
     async def test_l2_empty_triggers_knowledge_async(self, storage, embedder):
         mgr = self._mgr(storage, embedder)
-        mgr.add_knowledge(
-            "api:db-tips", "database connection pool sizing and throughput guide", {}
-        )
+        mgr.add_knowledge("api:db-tips", "database connection pool sizing and throughput guide", {})
         msgs = [{"role": "user", "content": "database pool config"}]
-        context, _ = await mgr.retrieve(
-            "database pool config", "user_b:222", msgs, round_num=1
-        )
+        context, _ = await mgr.retrieve("database pool config", "user_b:222", msgs, round_num=1)
         assert "## Project Knowledge" in context
 
     async def test_l2_hit_suppresses_knowledge(self, storage, embedder):
         mgr = self._mgr(storage, embedder)
-        mgr.add_knowledge(
-            "api:db-tips", "database connection pool sizing and throughput guide", {}
-        )
+        mgr.add_knowledge("api:db-tips", "database connection pool sizing and throughput guide", {})
         await mgr.store(
             "user_a:111",
             "tune database connection pool settings",

@@ -65,8 +65,11 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
 def create() -> ToolDef:
     return ToolDef(
         name="delete_file",
-        description="删除一个文件（不支持目录）。本会话新建且未合入主分支的文件可删；"
-        "已在主分支的既有文件受保护，需配置 allow_overwrite_existing=true 或在 overwrite_allowed_dirs 内。",
+        description=(
+            "删除一个文件（不支持目录）。本会话新建且未合入主分支的文件可删；"
+            "已在主分支的既有文件受保护，需配置 allow_overwrite_existing=true "
+            "或在 overwrite_allowed_dirs 内。"
+        ),
         input_schema={
             "type": "object",
             "properties": {

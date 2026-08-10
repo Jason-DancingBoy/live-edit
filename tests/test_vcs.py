@@ -344,7 +344,8 @@ class TestCreateWorktreeIdempotent:
         assert os.path.isfile(os.path.join(wt2, ".git"))
         branch = subprocess.run(
             ["git", "-C", wt2, "branch", "--show-current"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert branch == "live-edit/sess-again"
 
@@ -361,6 +362,7 @@ class TestCreateWorktreeIdempotent:
         wt2 = vcs.create_worktree("sess-survivor")
         branch = subprocess.run(
             ["git", "-C", wt2, "branch", "--show-current"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         assert branch == "live-edit/sess-survivor"

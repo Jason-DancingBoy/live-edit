@@ -93,8 +93,7 @@ def apply_edit(content: str, old: str, new: str) -> dict:
         return {
             "ok": False,
             "error": (
-                f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n"
-                + "\n".join(line_info)
+                f"old_string 匹配了 {count} 处，请提供更多上下文使其唯一:\n" + "\n".join(line_info)
             ),
         }
 

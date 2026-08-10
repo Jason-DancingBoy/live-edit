@@ -22,7 +22,18 @@ class FakeConfig:
 def _init_git(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"],
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ],
         cwd=str(tmp_path),
         check=True,
     )
@@ -68,7 +79,9 @@ class TestDeleteFile:
     async def test_delete_tracked_with_allow_overwrite_ok(self, tmp_path):
         _init_git(tmp_path)
         _tracked_file(tmp_path, "src/utils.py")
-        result = await df.execute({"path": "src/utils.py"}, str(tmp_path), FakeConfig(allow_overwrite=True))
+        result = await df.execute(
+            {"path": "src/utils.py"}, str(tmp_path), FakeConfig(allow_overwrite=True)
+        )
         assert result["ok"] is True
 
     async def test_delete_missing_file_errors(self, tmp_path):

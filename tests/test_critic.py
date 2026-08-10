@@ -149,9 +149,7 @@ class TestParseVerdictText:
                 {
                     "goal_achieved": True,
                     "summary": "s",
-                    "findings": [
-                        {"severity": "High", "file": "a.py", "description": "x"}
-                    ],
+                    "findings": [{"severity": "High", "file": "a.py", "description": "x"}],
                 }
             )
         )

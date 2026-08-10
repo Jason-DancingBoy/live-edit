@@ -220,9 +220,7 @@ class TestApproveEndpoint:
 class TestBatchApprove:
     def test_batch_approve_missing_session(self, client):
         """POST batch approve on a nonexistent session returns 404."""
-        response = client.post(
-            "/live-edit/approve/nonexistent/batch", json={"enabled": True}
-        )
+        response = client.post("/live-edit/approve/nonexistent/batch", json={"enabled": True})
         assert response.status_code == 404
 
     def test_batch_approve_enables_auto_approve(self, tmp_path):

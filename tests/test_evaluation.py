@@ -299,8 +299,12 @@ class TestIntrospectStage:
                 ]
 
         result = await _run_stage_introspect(
-            FakeProvider(), "user wants batch delete", "diff",
-            worktree_path="/tmp/wt", tool_registry=None, critic_max_rounds=2,
+            FakeProvider(),
+            "user wants batch delete",
+            "diff",
+            worktree_path="/tmp/wt",
+            tool_registry=None,
+            critic_max_rounds=2,
         )
         assert result["ok"] is False
         assert "[high]" in result["output"]
@@ -320,8 +324,11 @@ class TestIntrospectStage:
                 ]
 
         result = await _run_stage_introspect(
-            FakeProvider(), "add batch delete", "diff",
-            worktree_path="/tmp/wt", tool_registry=None,
+            FakeProvider(),
+            "add batch delete",
+            "diff",
+            worktree_path="/tmp/wt",
+            tool_registry=None,
         )
         assert result["ok"] is False
 
@@ -338,8 +345,11 @@ class TestIntrospectStage:
                 ]
 
         result = await _run_stage_introspect(
-            FakeProvider(), "fix it", "diff",
-            worktree_path="/tmp/wt", tool_registry=None,
+            FakeProvider(),
+            "fix it",
+            "diff",
+            worktree_path="/tmp/wt",
+            tool_registry=None,
         )
         assert result["ok"] is True
 

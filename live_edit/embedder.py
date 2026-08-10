@@ -45,7 +45,7 @@ class LocalEmbedder(Embedder):
         with self._lock:
             if self._model is not None:
                 return
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+            from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self._model_name)
             self._dimension = self._model.get_sentence_embedding_dimension()  # type: ignore[attr-defined]
