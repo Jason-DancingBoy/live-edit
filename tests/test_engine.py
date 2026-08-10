@@ -1735,3 +1735,95 @@ class TestEvalDiffPopulation:
             session_store=store,
         )
         assert "x = 2" in captured["diff"]
+
+
+# ── eval failure note ──
+
+
+@pytest.mark.asyncio
+class TestEvalFailureNote:
+    async def test_eval_failure_appends_conversation_note(self, monkeypatch):
+        import live_edit.engine as eng
+        from live_edit.config import EvaluationConfig
+        from live_edit.evaluation import EvalResult
+
+        config = _make_test_config()
+        config.evaluation = EvaluationConfig(enabled=True, max_retries=0, stages=["lint"])
+
+        async def _fake_pipeline(session, provider, config, preview_manager=None):
+            return EvalResult(passed=False, failed_stage="test", failed_output="boom")
+
+        monkeypatch.setattr(eng, "run_evaluation_pipeline", _fake_pipeline)
+
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = "/tmp/evalnote"
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        session = EditSession("s1", "fix it")
+        session._modified_files = ["x.py"]
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=FakeProvider([[{"type": "text", "text": "Done"}]]),
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+        )
+
+        events = _drain_queue(session)
+        assert any(e["type"] == "text" and "自动检查没通过" in e.get("text", "") for e in events)
+        assert any(e["type"] == "text" and "测试" in e.get("text", "") for e in events)
+        last = session.messages[-1]
+        assert last["role"] == "assistant"
+        assert "自动检查没通过" in last["content"][0]["text"]
+
+    async def test_eval_passed_no_note(self, monkeypatch):
+        import live_edit.engine as eng
+        from live_edit.config import EvaluationConfig
+        from live_edit.evaluation import EvalResult
+
+        config = _make_test_config()
+        config.evaluation = EvaluationConfig(enabled=True, max_retries=0, stages=["lint"])
+
+        async def _fake_pipeline(session, provider, config, preview_manager=None):
+            return EvalResult(passed=True)
+
+        monkeypatch.setattr(eng, "run_evaluation_pipeline", _fake_pipeline)
+
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = "/tmp/evalok"
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        session = EditSession("s1", "fix it")
+        session._modified_files = ["x.py"]
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=FakeProvider([[{"type": "text", "text": "Done"}]]),
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+        )
+
+        events = _drain_queue(session)
+        assert not any(
+            e["type"] == "text" and "自动检查没通过" in e.get("text", "") for e in events
+        )
+
+    def test_eval_failure_note_plain(self):
+        from live_edit.engine import _eval_failure_note
+
+        note = _eval_failure_note("test")
+        assert "测试" in note
+        assert "自动检查没通过" in note
+        assert _eval_failure_note("unknown_stage").startswith("不过")

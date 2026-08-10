@@ -20,6 +20,24 @@ from .vcs import VCS, session_worktree_path
 logger = logging.getLogger("live-edit.engine")
 
 
+EVAL_STAGE_LABELS = {
+    "lint": "代码检查",
+    "test": "测试",
+    "preview": "预览",
+    "introspect": "AI 自省",
+    "html_diff": "页面对比",
+}
+
+
+def _eval_failure_note(failed_stage: str) -> str:
+    label = EVAL_STAGE_LABELS.get(failed_stage, failed_stage)
+    return (
+        "不过有几项自动检查没通过(主要是 "
+        f"{label})。我自动修复了几次还没完全解决。"
+        "改动已经保留,你可以再描述一遍问题,或先看看改动的文件。"
+    )
+
+
 # ── Error translation ──
 
 _DEFAULT_ERROR_MAP = {
@@ -1088,6 +1106,15 @@ async def run_edit_session(
                 session._cached_diff = diff_result.stdout.strip()
 
             if eval_result and not eval_result.passed:
+                note = _eval_failure_note(eval_result.failed_stage)
+                note_message = {"role": "assistant", "content": [{"type": "text", "text": note}]}
+                session.messages.append(note_message)
+                # The main loop appends to the local `messages` list, and the
+                # `finally` block reassigns session.messages = messages, so the
+                # note must also live in `messages` to survive into the
+                # persisted conversation.
+                messages.append(note_message)
+                session.emit("text", text=note)
                 session.emit(
                     "eval_complete",
                     passed=False,
