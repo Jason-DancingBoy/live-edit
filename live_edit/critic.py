@@ -167,7 +167,7 @@ async def run_critic_agent(
         if not tool_uses:
             try:
                 return _parse_verdict_text("".join(text_parts))
-            except (ValueError, json.JSONDecodeError):
+            except Exception:
                 messages.append({"role": "assistant", "content": assistant_content})
                 messages.append(
                     {
