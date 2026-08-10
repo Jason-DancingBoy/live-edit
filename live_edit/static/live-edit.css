@@ -402,6 +402,7 @@
 .le-eval-dot.running { background: #2196f3; animation: le-pulse 0.8s infinite; }
 .le-eval-dot.passed { background: #4caf50; }
 .le-eval-dot.failed { background: #f44336; }
+.le-eval-dot.skipped { background: #9ca3af; }
 .le-eval-error { color: #f44336; font-size: 12px; }
 .le-eval-retry { color: #ff9800; font-size: 12px; padding: 2px 0; }
 

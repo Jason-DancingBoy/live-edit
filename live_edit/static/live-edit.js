@@ -367,6 +367,8 @@
       dot.className = "le-eval-dot running";
     } else if (status === "passed") {
       dot.className = "le-eval-dot passed";
+    } else if (status === "skipped") {
+      dot.className = "le-eval-dot skipped";
     } else {
       dot.className = "le-eval-dot failed";
       if (error) row.innerHTML += ' <span class="le-eval-error">' + error + "</span>";
