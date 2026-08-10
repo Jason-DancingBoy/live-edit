@@ -77,8 +77,8 @@ def _detect_lint_cmd(project_root: str, config) -> str:
         return config.evaluation.lint_command  # type: ignore[no-any-return]
     if os.path.exists(os.path.join(project_root, "pyproject.toml")):
         return (
-            "python3 -m py_compile $(git diff --cached --name-only"
-            " --diff-filter=ACM '*.py' 2>/dev/null) 2>&1"
+            "files=$(git diff --cached --name-only --diff-filter=ACM '*.py' 2>/dev/null);"
+            ' [ -z "$files" ] && exit 0; python3 -m py_compile $files 2>&1'
         )
     if os.path.exists(os.path.join(project_root, "package.json")):
         return "npm run lint --if-present 2>&1"

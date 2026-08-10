@@ -225,6 +225,28 @@ class TestDetectCommandsNoMasking:
         assert "||" not in cmd
 
 
+class TestLintEmptyPyDiff:
+    def test_lint_passes_when_only_non_py_changes_staged(self, tmp_path):
+        import subprocess as sp
+
+        sp.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+        (tmp_path / "README.md").write_text("hi\n")
+        sp.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+        sp.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+            cwd=str(tmp_path),
+            check=True,
+        )
+        (tmp_path / "README.md").write_text("hi\nworld\n")  # only a non-.py change
+        sp.run(["git", "add", "README.md"], cwd=str(tmp_path), check=True)
+
+        cmd = _detect_lint_cmd(str(tmp_path), None)
+        result = sp.run(cmd, shell=True, capture_output=True, text=True, cwd=str(tmp_path))
+        assert result.returncode == 0
+        assert "py_compile.py" not in (result.stdout + result.stderr)
+
+
 @pytest.mark.asyncio
 class TestRunStageClassification:
     async def test_run_stage_test_skips_no_tests(self, monkeypatch, tmp_path):
