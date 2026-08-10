@@ -212,9 +212,9 @@ class TestToolDefinitions:
 
     def test_qa_tools_is_readonly_subset(self):
         qa_names = {t["name"] for t in _t.QA_TOOLS}
-        # All 7 built-in tools currently have modes=None (visible in all modes)
+        # All 8 built-in tools currently have modes=None (visible in all modes)
         # TODO: refine mode filtering for built-in tools
-        assert len(qa_names) == 7
+        assert len(qa_names) == 8
 
     def test_get_mode_tools_quick_returns_all(self):
         tools = _t.get_mode_tools("quick")
@@ -222,8 +222,8 @@ class TestToolDefinitions:
 
     def test_get_mode_tools_qa_returns_readonly(self):
         tools = _t.get_mode_tools("qa")
-        # All 7 built-in tools currently have modes=None (visible in all modes)
-        assert len(tools) == 7
+        # All 8 built-in tools currently have modes=None (visible in all modes)
+        assert len(tools) == 8
 
 
 class TestWriteToolsSet:
