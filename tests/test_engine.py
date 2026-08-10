@@ -1740,8 +1740,8 @@ class TestEvalDiffPopulation:
 # ── eval failure note ──
 
 
-@pytest.mark.asyncio
 class TestEvalFailureNote:
+    @pytest.mark.asyncio
     async def test_eval_failure_appends_conversation_note(self, monkeypatch):
         import live_edit.engine as eng
         from live_edit.config import EvaluationConfig
@@ -1782,6 +1782,7 @@ class TestEvalFailureNote:
         assert last["role"] == "assistant"
         assert "自动检查没通过" in last["content"][0]["text"]
 
+    @pytest.mark.asyncio
     async def test_eval_passed_no_note(self, monkeypatch):
         import live_edit.engine as eng
         from live_edit.config import EvaluationConfig

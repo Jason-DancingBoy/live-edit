@@ -1108,11 +1108,8 @@ async def run_edit_session(
             if eval_result and not eval_result.passed:
                 note = _eval_failure_note(eval_result.failed_stage)
                 note_message = {"role": "assistant", "content": [{"type": "text", "text": note}]}
-                session.messages.append(note_message)
-                # The main loop appends to the local `messages` list, and the
-                # `finally` block reassigns session.messages = messages, so the
-                # note must also live in `messages` to survive into the
-                # persisted conversation.
+                # finally reassigns session.messages = messages, so this single
+                # append persists exactly one copy in both fresh and continue paths.
                 messages.append(note_message)
                 session.emit("text", text=note)
                 session.emit(
