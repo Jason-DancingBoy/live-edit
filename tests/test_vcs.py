@@ -1,6 +1,7 @@
 """Tests for live_edit.vcs — VCS interface and GitVCS implementation."""
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -318,3 +319,48 @@ class TestCleanupStaleWorktrees:
         vcs.cleanup_stale_worktrees(ttl_seconds=86400)
 
         assert not os.path.isdir(orphan)
+
+
+class TestCreateWorktreeIdempotent:
+    """create_worktree must be idempotent: a /continue after _do_commit may
+    find the worktree dir+branch still present (preview kept it) even though
+    session._worktree_path was cleared. It must reuse, not crash on exit 128."""
+
+    def _cleanup(self, session_id):
+        # A previous run may have left a linked worktree in the shared
+        # /tmp/live-edit pointing at a now-deleted temp repo. Remove the stale
+        # dir so each test starts clean regardless of run order.
+        shutil.rmtree(os.path.join("/tmp/live-edit", session_id), ignore_errors=True)
+
+    def test_reuses_existing_worktree(self, git_repo):
+        from live_edit.vcs import GitVCS
+
+        self._cleanup("sess-again")
+        vcs = GitVCS(git_repo)
+        wt1 = vcs.create_worktree("sess-again")
+        # continue after _do_commit kept the worktree but cleared _worktree_path
+        wt2 = vcs.create_worktree("sess-again")
+        assert wt1 == wt2
+        assert os.path.isfile(os.path.join(wt2, ".git"))
+        branch = subprocess.run(
+            ["git", "-C", wt2, "branch", "--show-current"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert branch == "live-edit/sess-again"
+
+    def test_rechecks_out_surviving_branch(self, git_repo):
+        from live_edit.vcs import GitVCS
+
+        self._cleanup("sess-survivor")
+        vcs = GitVCS(git_repo)
+        wt = vcs.create_worktree("sess-survivor")
+        (Path(wt) / "f.py").write_text("x")
+        vcs.commit_in_worktree(wt, ["f.py"], "live-edit: wip")
+        vcs.remove_worktree_dir(wt, "sess-survivor")
+        assert not os.path.isdir(wt)
+        wt2 = vcs.create_worktree("sess-survivor")
+        branch = subprocess.run(
+            ["git", "-C", wt2, "branch", "--show-current"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        assert branch == "live-edit/sess-survivor"

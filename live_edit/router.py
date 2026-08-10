@@ -251,7 +251,12 @@ def setup_live_edit(
                     with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(task, timeout=30.0)
 
-            await task
+            try:
+                await task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': f'会话执行出错: {e}'})}\n\n"
 
         return StreamingResponse(
             event_generator(),
@@ -337,7 +342,12 @@ def setup_live_edit(
                     with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(task, timeout=30.0)
 
-            await task
+            try:
+                await task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': f'会话执行出错: {e}'})}\n\n"
 
         return StreamingResponse(
             event_generator(),

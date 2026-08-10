@@ -235,26 +235,66 @@ class GitVCS(VCS):
                 except Exception as e:
                     logger.warning("Failed to remove orphan dir %s: %s", path, e)
 
+    def _branch_exists(self, branch: str) -> bool:
+        """True if a local branch with this name exists in the main repo."""
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=self.repo_path,
+        )
+        return result.returncode == 0
+
+    @staticmethod
+    def _is_linked_worktree(path: str) -> bool:
+        """True if path is a git-linked worktree (has a .git file marker).
+
+        A linked worktree has a `.git` FILE pointing into the main repo's
+        gitdir; the main repo has a `.git` DIRECTORY, so this never matches it.
+        """
+        return os.path.isfile(os.path.join(path, ".git"))
+
     def create_worktree(self, session_id: str) -> str:
         worktree_path = session_worktree_path(session_id)
         os.makedirs(_WORKTREE_ROOT, exist_ok=True)
 
+        # Idempotent: a continue after a commit kept the worktree dir+branch
+        # but cleared _worktree_path (engine._do_commit). Reuse the existing
+        # linked worktree instead of failing on `git worktree add` (the path is
+        # already registered).
+        if self._is_linked_worktree(worktree_path):
+            logger.info("Reusing existing worktree for session %s at %s", session_id, worktree_path)
+            return worktree_path
+
+        branch = f"live-edit/{session_id}"
         main = self.get_main_branch()
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", worktree_path, main],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=self.repo_path,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", worktree_path, "checkout", "-b", f"live-edit/{session_id}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
+        if self._branch_exists(branch):
+            # Session branch survived a worktree removal — check it out directly.
+            subprocess.run(
+                ["git", "worktree", "add", worktree_path, branch],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self.repo_path,
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", worktree_path, main],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self.repo_path,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", worktree_path, "checkout", "-b", branch],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
         # Symlink config files that aren't tracked by git but are needed
         # by the preview server (e.g. .live-edit.toml).
         _symlink_config(self.repo_path, worktree_path, ".live-edit.toml")

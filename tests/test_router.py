@@ -289,6 +289,63 @@ class TestStreamEndpoint:
         assert response.status_code == 404
 
 
+class TestContinueErrorSurface:
+    def test_crashed_continue_task_yields_error_event(self, tmp_path, monkeypatch):
+        """A crashed continue task must surface as an SSE error event, not kill
+        the stream silently. Regression: the old code did a bare `await task`
+        after the queue loop, so a crashing task raised out of the generator and
+        the SSE stream died with no user-facing event."""
+        from unittest.mock import MagicMock
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import live_edit.router as router_mod
+        from live_edit.engine import EditSession, SessionStore
+        from live_edit.router import setup_live_edit
+
+        config_path = _write_router_config(tmp_path)
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        session = EditSession("s1", "continue me")
+        session._merged = True  # committed session: worktree kept but _worktree_path cleared
+        session._worktree_path = ""
+        store.add(session)
+
+        async def _boom(**kwargs):
+            # Simulate a task that ends the stream loop then crashes mid-flight
+            # (e.g. CalledProcessError from `git worktree add` on a /continue).
+            session = kwargs["session"]
+            session.queue.put_nowait(None)
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(router_mod, "continue_edit_session", _boom)
+
+        router = setup_live_edit(
+            project_root=str(tmp_path),
+            config_path=str(config_path),
+            provider=FakeProvider(),
+            storage=MagicMock(),
+            vcs=MagicMock(),
+            session_store=store,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        data_lines = []
+        with client.stream(
+            "POST", "/live-edit/continue/s1", json={"request": "hi", "mode": "quick"}
+        ) as response:
+            assert response.status_code == 200
+            for chunk in response.iter_text():
+                for line in chunk.splitlines():
+                    if line.startswith("data:"):
+                        data_lines.append(line)
+
+        assert data_lines, "expected at least one SSE data line"
+        assert any('"type": "error"' in line and "boom" in line for line in data_lines)
+
+
 class TestHealthCheck:
     def test_health_endpoint(self, client):
         response = client.get("/live-edit/health")
