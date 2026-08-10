@@ -50,6 +50,27 @@ class EvalResult:
     failed_output: str = ""
 
 
+_SKIP_MARKERS = {
+    "lint": ("command not found",),
+    "python": ("modulenotfounderror", "no module named 'pytest'", "command not found"),
+    "node": ("missing script:", "command not found"),
+    "go": ("[no test files]", "command not found"),
+}
+
+
+def _classify_stage_result(lang: str, returncode: int, output: str) -> str:
+    """Classify a subprocess outcome as passed / skipped / failed."""
+    low = output.lower()
+    for marker in _SKIP_MARKERS.get(lang, ()):
+        if marker in low or marker in output:
+            return "skipped"
+    if lang == "python" and returncode == 5:
+        return "skipped"
+    if returncode == 0:
+        return "passed"
+    return "failed"
+
+
 def _detect_lint_cmd(project_root: str, config) -> str:
     """Auto-detect lint command from project type."""
     if config and hasattr(config, "evaluation") and config.evaluation.lint_command:
@@ -58,10 +79,9 @@ def _detect_lint_cmd(project_root: str, config) -> str:
         return (
             "python3 -m py_compile $(git diff --cached --name-only"
             " --diff-filter=ACM '*.py' 2>/dev/null) 2>&1"
-            " || echo 'no .py changes'"
         )
     if os.path.exists(os.path.join(project_root, "package.json")):
-        return "npm run lint --if-present 2>&1 || echo 'no lint script'"
+        return "npm run lint --if-present 2>&1"
     if os.path.exists(os.path.join(project_root, "go.mod")):
         return "go vet ./... 2>&1"
     return "echo 'no lint command detected'"
@@ -72,9 +92,9 @@ def _detect_test_cmd(project_root: str, config) -> str:
     if config and hasattr(config, "evaluation") and config.evaluation.test_command:
         return config.evaluation.test_command  # type: ignore[no-any-return]
     if os.path.exists(os.path.join(project_root, "pyproject.toml")):
-        return "python3 -m pytest -x --tb=short 2>&1 || echo 'no tests'"
+        return "python3 -m pytest -x --tb=short 2>&1"
     if os.path.exists(os.path.join(project_root, "package.json")):
-        return "npm test 2>&1 || echo 'no tests'"
+        return "npm test 2>&1"
     if os.path.exists(os.path.join(project_root, "go.mod")):
         return "go test ./... 2>&1"
     return "echo 'no test command detected'"
@@ -92,10 +112,15 @@ async def _run_stage_lint(project_root: str, config) -> dict:
             cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:2000]
-        passed = result.returncode == 0
-        return {"ok": passed, "output": output, "command": cmd}
+        outcome = _classify_stage_result("lint", result.returncode, output)
+        return {
+            "ok": outcome == "passed",
+            "skipped": outcome == "skipped",
+            "output": output,
+            "command": cmd,
+        }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "output": "Lint check timed out", "command": cmd}
+        return {"ok": False, "skipped": False, "output": "Lint check timed out", "command": cmd}
 
 
 async def _run_stage_test(project_root: str, config) -> dict:
@@ -110,10 +135,16 @@ async def _run_stage_test(project_root: str, config) -> dict:
             cwd=project_root,
         )
         output = (result.stdout + result.stderr)[:3000]
-        passed = result.returncode == 0
-        return {"ok": passed, "output": output, "command": cmd}
+        lang = "python" if "pytest" in cmd else ("node" if "npm test" in cmd else "go")
+        outcome = _classify_stage_result(lang, result.returncode, output)
+        return {
+            "ok": outcome == "passed",
+            "skipped": outcome == "skipped",
+            "output": output,
+            "command": cmd,
+        }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "output": "Test execution timed out", "command": cmd}
+        return {"ok": False, "skipped": False, "output": "Test execution timed out", "command": cmd}
 
 
 async def _run_stage_preview(preview_url: str) -> dict:

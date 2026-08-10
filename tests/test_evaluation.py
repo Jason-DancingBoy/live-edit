@@ -6,8 +6,11 @@ from live_edit.config import Config, EvaluationConfig, PreviewConfig
 from live_edit.evaluation import (
     EvalResult,
     EvalStage,
+    _classify_stage_result,
     _detect_lint_cmd,
     _detect_test_cmd,
+    _run_stage_lint,
+    _run_stage_test,
     resolve_stages,
     run_evaluation_pipeline,
 )
@@ -170,3 +173,86 @@ class TestPipelineThreeState:
         assert result.failed_stage == "lint"
         assert result.stages_passed == []
         assert result.stages_failed == ["lint"]
+
+
+class TestClassifyStageResult:
+    def test_python_passed(self):
+        assert _classify_stage_result("python", 0, "3 passed") == "passed"
+
+    def test_python_no_tests_skipped(self):
+        assert _classify_stage_result("python", 5, "no tests ran") == "skipped"
+
+    def test_python_pytest_missing_skipped(self):
+        out = "ModuleNotFoundError: No module named 'pytest'"
+        assert _classify_stage_result("python", 1, out) == "skipped"
+
+    def test_python_command_not_found_skipped(self):
+        out = "/bin/sh: python3: command not found"
+        assert _classify_stage_result("python", 127, out) == "skipped"
+
+    def test_python_failure(self):
+        assert _classify_stage_result("python", 1, "3 failed") == "failed"
+
+    def test_node_missing_script_skipped(self):
+        out = 'Missing script: "test"'
+        assert _classify_stage_result("node", 1, out) == "skipped"
+
+    def test_go_no_test_files_skipped(self):
+        out = "?   github.com/x/pkg [no test files]"
+        assert _classify_stage_result("go", 0, out) == "skipped"
+
+    def test_go_passed(self):
+        assert _classify_stage_result("go", 0, "ok") == "passed"
+
+    def test_lint_command_not_found_skipped(self):
+        assert _classify_stage_result("lint", 127, "command not found") == "skipped"
+
+    def test_lint_failure(self):
+        assert _classify_stage_result("lint", 1, "SyntaxError") == "failed"
+
+
+class TestDetectCommandsNoMasking:
+    def test_detect_test_python_has_no_or_fallback(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
+        cmd = _detect_test_cmd(str(tmp_path), None)
+        assert "pytest" in cmd
+        assert "||" not in cmd
+
+    def test_detect_lint_python_has_no_or_fallback(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
+        cmd = _detect_lint_cmd(str(tmp_path), None)
+        assert "py_compile" in cmd
+        assert "||" not in cmd
+
+
+@pytest.mark.asyncio
+class TestRunStageClassification:
+    async def test_run_stage_test_skips_no_tests(self, monkeypatch, tmp_path):
+        import live_edit.evaluation as ev
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'")
+
+        class FakeProc:
+            returncode = 5
+            stdout = "no tests ran"
+            stderr = ""
+
+        monkeypatch.setattr(ev.subprocess, "run", lambda *a, **k: FakeProc())
+        result = await _run_stage_test(str(tmp_path), None)
+        assert result["skipped"] is True
+        assert result["ok"] is False
+
+    async def test_run_stage_lint_fails(self, monkeypatch, tmp_path):
+        import live_edit.evaluation as ev
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'")
+
+        class FakeProc:
+            returncode = 1
+            stdout = "SyntaxError: invalid syntax"
+            stderr = ""
+
+        monkeypatch.setattr(ev.subprocess, "run", lambda *a, **k: FakeProc())
+        result = await _run_stage_lint(str(tmp_path), None)
+        assert result["ok"] is False
+        assert result["skipped"] is False
