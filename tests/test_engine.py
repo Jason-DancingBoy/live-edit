@@ -1494,7 +1494,9 @@ class TestRehydrateSession:
         subprocess.run(["git", "config", "user.name", "T"], cwd=repo, capture_output=True)
         (tmp_path / "initial.txt").write_text("initial")
         subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=repo, capture_output=True, check=True
+        )
 
         monkeypatch.setattr(vcs_mod, "_WORKTREE_ROOT", str(tmp_path / "wt-root"))
         vcs = vcs_mod.GitVCS(repo)
@@ -1502,7 +1504,9 @@ class TestRehydrateSession:
         wt = vcs.create_worktree(sid)
         # Commit real work to the session branch (mirrors a completed _do_commit).
         (Path(wt) / "work.txt").write_text("done")
-        subprocess.run(["git", "-C", wt, "add", "work.txt"], capture_output=True, text=True, check=True)
+        subprocess.run(
+            ["git", "-C", wt, "add", "work.txt"], capture_output=True, text=True, check=True
+        )
         subprocess.run(
             ["git", "-C", wt, "commit", "-m", "live-edit: session work"],
             capture_output=True,
@@ -1676,3 +1680,58 @@ class TestRollbackAudit:
         assert events[0].result == "ok"
         assert events[0].target == session.id
         assert session._outcome == "cancelled"
+
+
+# ── Evaluation diff population ──
+
+
+@pytest.mark.asyncio
+class TestEvalDiffPopulation:
+    async def test_eval_populates_cached_diff_before_first_run(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        import live_edit.engine as eng
+        from live_edit.config import EvaluationConfig
+        from live_edit.evaluation import EvalResult
+
+        sp.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
+        p = tmp_path / "a.py"
+        p.write_text("x = 1\n")
+        sp.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+        sp.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+            cwd=str(tmp_path),
+            check=True,
+        )
+        p.write_text("x = 2\n")  # uncommitted change
+
+        captured = {}
+
+        async def _fake_pipeline(session, provider, config, preview_manager=None):
+            captured["diff"] = session._cached_diff
+            return EvalResult(passed=True)
+
+        monkeypatch.setattr(eng, "run_evaluation_pipeline", _fake_pipeline)
+
+        config = _make_test_config()
+        config.evaluation = EvaluationConfig(enabled=True, max_retries=0, stages=["introspect"])
+        mock_vcs = MagicMock()
+        mock_vcs.create_worktree.return_value = str(tmp_path)
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        session = EditSession("s1", "change x")
+        session._modified_files = ["a.py"]
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=FakeProvider([[{"type": "text", "text": "Done"}]]),
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=config,
+            mode="deep",
+            session_store=store,
+        )
+        assert "x = 2" in captured["diff"]

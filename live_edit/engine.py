@@ -10,7 +10,7 @@ import traceback
 
 from .config import Config
 from .diff import compute_write_diff
-from .evaluation import run_evaluation_pipeline
+from .evaluation import resolve_stages, run_evaluation_pipeline
 from .memory import MemoryManager
 from .provider import Provider
 from .storage import Storage
@@ -182,9 +182,7 @@ class EditSession:
         self._approve_event.clear()
         self._approve_result = None
         if self._auto_approve:
-            self.queue.put_nowait(
-                {"type": "tool_plan", "id": tool_id, "auto": True, **tool_data}
-            )
+            self.queue.put_nowait({"type": "tool_plan", "id": tool_id, "auto": True, **tool_data})
             return {"approved": True, "auto": True}
         self.queue.put_nowait({"type": "tool_plan", "id": tool_id, **tool_data})
         try:
@@ -1030,7 +1028,17 @@ async def run_edit_session(
         ):
             import subprocess as _sp2
 
-            session.emit("eval_started", stages=config.evaluation.stages)
+            session.emit("eval_started", stages=resolve_stages(config))
+            # Populate the cached diff BEFORE the first evaluation so the
+            # introspect stage sees the actual changes (it was empty on first run).
+            _sp2.run(["git", "-C", _root, "add", "-A"], capture_output=True, text=True, timeout=10)
+            _diff0 = _sp2.run(
+                ["git", "-C", _root, "diff", "--cached"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            session._cached_diff = _diff0.stdout.strip()
             max_eval_retries = config.evaluation.max_retries
             retry = 0
             eval_result = None
