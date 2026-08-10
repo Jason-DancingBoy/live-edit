@@ -88,6 +88,20 @@ class TestDeleteFile:
         assert result["ok"] is False
         assert (tmp_path / "notes.txt").exists()
 
+    async def test_delete_committed_session_file_not_in_main_ok(self, tmp_path):
+        # File committed only on the session branch (live-edit/sess-1), not on
+        # main/master → still session-owned → deletable.
+        _init_git(tmp_path)
+        subprocess.run(
+            ["git", "checkout", "-q", "-b", "live-edit/sess-1"],
+            cwd=str(tmp_path),
+            check=True,
+        )
+        _tracked_file(tmp_path, "new.txt", "hi")
+        result = await df.execute({"path": "new.txt"}, str(tmp_path), FakeConfig())
+        assert result["ok"] is True
+        assert not (tmp_path / "new.txt").exists()
+
     async def test_delete_directory_refused(self, tmp_path):
         _init_git(tmp_path)
         (tmp_path / "adir").mkdir()

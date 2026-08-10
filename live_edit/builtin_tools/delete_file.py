@@ -7,29 +7,31 @@ from ..safety import check_write_allowed, safe_path
 from ..tool_registry import ToolDef
 
 
-def _exists_in_head(project_root: str, rel_path: str) -> bool:
-    """True if rel_path exists in the worktree's HEAD commit tree.
+def _in_main_branch(project_root: str, rel_path: str) -> bool:
+    """True if rel_path exists in the main branch (merged into the real codebase).
 
-    Files NOT in HEAD were created this session (or are untracked) and are
-    deletable; committed files are treated as protected source.
+    A file committed only to the session branch (live-edit/<id>) is NOT in main
+    and stays deletable until the session is merged. Files in main are
+    pre-existing and protected.
 
-    Conservative protection on git errors: a non-zero exit (e.g. a repo with no
-    HEAD commit yet, or a non-git directory) makes `git ls-tree` exit 128 with
-    empty stdout, which would otherwise look like "not in HEAD" and collapse the
-    policy to allow-all. We therefore treat any non-zero exit as protected.
+    Conservative protection on git errors: if neither main nor master can be
+    resolved (repo with no commits, or a non-git directory), treat the file as
+    protected — never collapse to allow-all.
     """
-    try:
-        result = subprocess.run(
-            ["git", "-C", project_root, "ls-tree", "HEAD", "--", rel_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return True  # conservative: on git error, treat as pre-existing
-        return bool(result.stdout.strip())
-    except Exception:
-        return True  # conservative: on git error, treat as pre-existing
+    for branch in ("main", "master"):
+        try:
+            result = subprocess.run(
+                ["git", "-C", project_root, "ls-tree", branch, "--", rel_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0:
+            return bool(result.stdout.strip())  # in main → protected
+        # branch name doesn't exist here — try the next candidate
+    return True  # conservative: main branch undeterminable → treat as protected
 
 
 async def execute(args: dict, project_root: str, config=None) -> dict:
@@ -43,9 +45,9 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
     if os.path.isdir(abs_path):
         return {"ok": False, "error": f"不能删除目录: {rel_path}"}
 
-    # 3-tier policy (spec §2): session-created/untracked → deletable;
+    # 3-tier policy (spec §2): not in main branch → deletable;
     # otherwise mirror write_file's protection.
-    if _exists_in_head(project_root, rel_path):
+    if _in_main_branch(project_root, rel_path):
         overwrite_dirs = None
         allow_overwrite = False
         if config and hasattr(config, "safety"):
@@ -63,8 +65,8 @@ async def execute(args: dict, project_root: str, config=None) -> dict:
 def create() -> ToolDef:
     return ToolDef(
         name="delete_file",
-        description="删除一个文件（不支持目录）。新建/未跟踪文件可删；"
-        "受保护的既有文件需配置 allow_overwrite_existing=true 或在 overwrite_allowed_dirs 内。",
+        description="删除一个文件（不支持目录）。本会话新建且未合入主分支的文件可删；"
+        "已在主分支的既有文件受保护，需配置 allow_overwrite_existing=true 或在 overwrite_allowed_dirs 内。",
         input_schema={
             "type": "object",
             "properties": {
