@@ -119,7 +119,7 @@ class TestPipelineThreeState:
         async def _test(root, config):
             return {"ok": False, "skipped": True, "output": "no tests"}
 
-        async def _introspect(provider, req, diff):
+        async def _introspect(provider, req, diff, **kwargs):
             return {"ok": True, "output": ""}
 
         monkeypatch.setattr(ev, "_run_stage_lint", _lint)
@@ -131,7 +131,7 @@ class TestPipelineThreeState:
             preview=PreviewConfig(enabled=False),
         )
         sess = FakeSession()
-        result = await run_evaluation_pipeline(sess, None, cfg)
+        result = await run_evaluation_pipeline(sess, None, cfg, tool_registry=None)
         assert result.passed is True
         assert result.stages_skipped == ["test"]
         assert result.stages_passed == ["lint", "introspect"]
@@ -168,7 +168,7 @@ class TestPipelineThreeState:
             preview=PreviewConfig(enabled=False),
         )
         sess = FakeSession()
-        result = await run_evaluation_pipeline(sess, None, cfg)
+        result = await run_evaluation_pipeline(sess, None, cfg, tool_registry=None)
         assert result.passed is False
         assert result.failed_stage == "lint"
         assert result.stages_passed == []
@@ -278,3 +278,101 @@ class TestRunStageClassification:
         result = await _run_stage_lint(str(tmp_path), None)
         assert result["ok"] is False
         assert result["skipped"] is False
+
+
+@pytest.mark.asyncio
+class TestIntrospectStage:
+    async def test_blocking_findings_fail_stage(self):
+        from live_edit.evaluation import _run_stage_introspect
+
+        class FakeProvider:
+            async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
+                return [
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"goal_achieved": true, "summary": "x", '
+                            '"findings": [{"severity": "high", "file": "a.py", '
+                            '"line": 5, "description": "broken caller"}]}'
+                        ),
+                    }
+                ]
+
+        result = await _run_stage_introspect(
+            FakeProvider(), "user wants batch delete", "diff",
+            worktree_path="/tmp/wt", tool_registry=None, critic_max_rounds=2,
+        )
+        assert result["ok"] is False
+        assert "[high]" in result["output"]
+
+    async def test_goal_not_achieved_fails_stage(self):
+        from live_edit.evaluation import _run_stage_introspect
+
+        class FakeProvider:
+            async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
+                return [
+                    {
+                        "type": "text",
+                        "text": (
+                            '{"goal_achieved": false, "summary": "batch delete missing", "findings": []}'
+                        ),
+                    }
+                ]
+
+        result = await _run_stage_introspect(
+            FakeProvider(), "add batch delete", "diff",
+            worktree_path="/tmp/wt", tool_registry=None,
+        )
+        assert result["ok"] is False
+
+    async def test_clean_verdict_passes(self):
+        from live_edit.evaluation import _run_stage_introspect
+
+        class FakeProvider:
+            async def call_with_tools(self, messages, tools, on_thinking=None, on_text=None):
+                return [
+                    {
+                        "type": "text",
+                        "text": '{"goal_achieved": true, "summary": "ok", "findings": []}',
+                    }
+                ]
+
+        result = await _run_stage_introspect(
+            FakeProvider(), "fix it", "diff",
+            worktree_path="/tmp/wt", tool_registry=None,
+        )
+        assert result["ok"] is True
+
+    async def test_pipeline_threads_tool_registry(self, monkeypatch):
+        import live_edit.evaluation as ev
+
+        class FakeSession:
+            def __init__(self):
+                self._worktree_path = "/tmp/fake"
+                self._preview_url = ""
+                self.request = "fix it"
+                self._cached_diff = "diff"
+                self.events = []
+
+            def emit(self, event_type, **data):
+                self.events.append({"type": event_type, **data})
+
+        seen = {}
+
+        async def _introspect(provider, req, diff, **kwargs):
+            seen.update(kwargs)
+            return {"ok": True, "output": ""}
+
+        monkeypatch.setattr(ev, "_run_stage_introspect", _introspect)
+
+        from live_edit.config import Config, EvaluationConfig, PreviewConfig
+
+        cfg = Config(
+            evaluation=EvaluationConfig(enabled=True, stages=["introspect"]),
+            preview=PreviewConfig(enabled=False),
+        )
+        sess = FakeSession()
+        await ev.run_evaluation_pipeline(sess, None, cfg, tool_registry="REG")
+        assert seen.get("tool_registry") == "REG"
+        assert seen.get("worktree_path") == "/tmp/fake"
+        assert seen.get("critic_max_rounds") == 2

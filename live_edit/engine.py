@@ -1067,6 +1067,7 @@ async def run_edit_session(
                     provider=provider,
                     config=config,
                     preview_manager=preview_manager,
+                    tool_registry=tool_registry,
                 )
                 if eval_result.passed:
                     break

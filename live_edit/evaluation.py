@@ -10,6 +10,8 @@ from enum import Enum
 
 import httpx
 
+from .critic import run_critic_agent
+
 logger = logging.getLogger("live-edit.evaluation")
 
 STAGE_ORDER = {"lint": 0, "test": 1, "preview": 2, "introspect": 3, "html_diff": 4}
@@ -166,41 +168,42 @@ async def _run_stage_preview(preview_url: str) -> dict:
         return {"ok": False, "output": f"Preview check failed: {e}"}
 
 
-async def _run_stage_introspect(provider, user_request: str, diff: str) -> dict:
-    """Ask the LLM whether the changes achieved the user's goal."""
+async def _run_stage_introspect(
+    provider,
+    user_request: str,
+    diff: str,
+    *,
+    worktree_path: str = "",
+    tool_registry=None,
+    critic_max_rounds: int = 2,
+    is_cancelled=None,
+) -> dict:
+    """Ask a fresh-context critic agent whether the changes achieved the goal."""
     if not diff:
         return {"ok": True, "output": "No diff to introspect"}
-    messages = [
-        {
-            "role": "user",
-            "content": (
-                "你是一个代码审查助手。用户的需求是：\n"
-                f"{user_request}\n\n"
-                "AI 进行了以下代码修改（diff）：\n"
-                f"```diff\n{diff[:4000]}\n```\n\n"
-                "请判断：这些修改是否达成了用户的目标？有没有遗漏或错误？\n"
-                "请用中文简短回答。如果达成目标，第一行写「评估结果: 通过」。"
-                "如果有问题，第一行写「评估结果: 未通过」，然后列出具体问题。"
-            ),
-        },
-    ]
     try:
-        content_blocks = await provider.call_with_tools(
-            messages=messages,
-            tools=[],
-            on_thinking=None,
-            on_text=None,
+        verdict = await run_critic_agent(
+            provider=provider,
+            tool_registry=tool_registry,
+            worktree_path=worktree_path,
+            user_request=user_request,
+            diff=diff,
+            max_rounds=critic_max_rounds,
+            is_cancelled=is_cancelled,
         )
-        if not content_blocks:
-            return {"ok": True, "output": "Introspection skipped (no LLM response)"}
-        text = ""
-        for block in content_blocks:
-            if block and block.get("type") == "text":
-                text += block.get("text", "")
-        passed = "通过" in text[:100] and "未通过" not in text[:100]
-        return {"ok": passed, "output": text[:1000]}
     except Exception as e:
-        return {"ok": True, "output": f"Introspection error (treated as pass): {e}"}
+        return {"ok": True, "output": f"Critic error (treated as pass): {e}"}
+
+    if verdict.goal_achieved and not verdict.blocking:
+        note = f"审查通过：{verdict.summary}" if verdict.summary else "审查通过"
+        return {"ok": True, "output": note}
+
+    reason = "改动未达成用户目标" if not verdict.goal_achieved else "存在致命问题"
+    lines = [f"审查未通过：{reason}"]
+    for f in verdict.findings:
+        loc = f"{f.file}:{f.line}" if f.line else f.file
+        lines.append(f"- [{f.severity}] {loc} — {f.description}")
+    return {"ok": False, "output": "\n".join(lines)}
 
 
 async def _run_stage_html_diff(preview_url: str, pages: list[str]) -> dict:
@@ -241,7 +244,9 @@ async def _run_stage_html_diff(preview_url: str, pages: list[str]) -> dict:
     }
 
 
-async def run_evaluation_pipeline(session, provider, config, preview_manager=None) -> EvalResult:
+async def run_evaluation_pipeline(
+    session, provider, config, preview_manager=None, tool_registry=None
+) -> EvalResult:
     """Run all evaluation stages, stop at first failure. No retry loop — that's in engine.py."""
     stages = resolve_stages(config)
     if not stages:
@@ -252,7 +257,19 @@ async def run_evaluation_pipeline(session, provider, config, preview_manager=Non
         "test": lambda: _run_stage_test(session._worktree_path, config),
         "preview": lambda: _run_stage_preview(session._preview_url),
         "introspect": lambda: _run_stage_introspect(
-            provider, session.request, getattr(session, "_cached_diff", "")
+            provider,
+            session.request,
+            getattr(session, "_cached_diff", ""),
+            worktree_path=session._worktree_path,
+            tool_registry=tool_registry,
+            critic_max_rounds=(
+                config.evaluation.critic_max_rounds if hasattr(config, "evaluation") else 2
+            ),
+            is_cancelled=(
+                (lambda: session._cancelled.is_set())
+                if getattr(session, "_cancelled", None) is not None
+                else None
+            ),
         ),
         "html_diff": lambda: _run_stage_html_diff(
             session._preview_url,

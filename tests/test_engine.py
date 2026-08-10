@@ -1709,7 +1709,7 @@ class TestEvalDiffPopulation:
 
         captured = {}
 
-        async def _fake_pipeline(session, provider, config, preview_manager=None):
+        async def _fake_pipeline(session, provider, config, preview_manager=None, tool_registry=None):
             captured["diff"] = session._cached_diff
             return EvalResult(passed=True)
 
@@ -1752,7 +1752,7 @@ class TestEvalFailureNote:
         config = _make_test_config()
         config.evaluation = EvaluationConfig(enabled=True, max_retries=0, stages=["lint"])
 
-        async def _fake_pipeline(session, provider, config, preview_manager=None):
+        async def _fake_pipeline(session, provider, config, preview_manager=None, tool_registry=None):
             return EvalResult(passed=False, failed_stage="test", failed_output="boom")
 
         monkeypatch.setattr(eng, "run_evaluation_pipeline", _fake_pipeline)
@@ -1793,7 +1793,7 @@ class TestEvalFailureNote:
         config = _make_test_config()
         config.evaluation = EvaluationConfig(enabled=True, max_retries=0, stages=["lint"])
 
-        async def _fake_pipeline(session, provider, config, preview_manager=None):
+        async def _fake_pipeline(session, provider, config, preview_manager=None, tool_registry=None):
             return EvalResult(passed=True)
 
         monkeypatch.setattr(eng, "run_evaluation_pipeline", _fake_pipeline)
