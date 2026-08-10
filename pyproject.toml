@@ -83,3 +83,11 @@ check_untyped_defs = true
 no_implicit_optional = true
 warn_no_return = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["live_edit.embedder"]
+warn_unused_ignores = false
