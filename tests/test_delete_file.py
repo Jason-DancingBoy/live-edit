@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from live_edit.builtin_tools import delete_file as df
+from live_edit.engine import translate_error
 
 
 class FakeSafety:
@@ -93,3 +94,14 @@ class TestDeleteFile:
         assert td.name == "delete_file"
         assert td.is_write is True
         assert "path" in td.input_schema["required"]
+
+
+def test_delete_blocked_error_translation_default_map():
+    # Regression: the delete-blocked error contains "write_file 只能覆写" as a
+    # substring; the delete-specific key must sort BEFORE it so quick mode
+    # surfaces the delete message (not the generic create-or-modify one).
+    msg = translate_error(
+        "删除受保护文件被拒绝：write_file 只能覆写 static 目录下的文件或创建新文件",
+        "quick",
+    )
+    assert "该文件受保护，不能删除" in msg
