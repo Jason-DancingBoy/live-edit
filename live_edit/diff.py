@@ -52,4 +52,7 @@ def compute_write_diff(tool_name: str, args: dict, project_root: str) -> str:
     if tool_name == "write_file":
         return diff_text(current, args.get("content", ""), path)
 
+    if tool_name == "delete_file":
+        return diff_text(current, "", path)
+
     return ""

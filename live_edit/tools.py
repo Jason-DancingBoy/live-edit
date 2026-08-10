@@ -40,6 +40,8 @@ def _tool_summary(name: str, args: dict) -> str:
         old_s = args.get("old_string", "")
         preview = _trunc(old_s, 60)
         return f"编辑 {path}: {preview}"
+    elif name in ("delete_file", "Delete"):
+        return f"删除 {path}"
     elif name in ("run_shell", "Bash"):
         return f"执行: {_trunc(cmd, 80)}"
     elif name in ("search_code", "Grep"):

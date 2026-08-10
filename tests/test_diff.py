@@ -65,3 +65,14 @@ def test_compute_write_diff_edit_failure_returns_empty(tmp_path):
         )
         == ""
     )
+
+
+class TestDeleteFileDiff:
+    def test_delete_file_returns_full_removal_diff(self, tmp_path):
+        from live_edit.diff import compute_write_diff
+
+        p = tmp_path / "gone.py"
+        p.write_text("print('bye')\n")
+        d = compute_write_diff("delete_file", {"path": "gone.py"}, str(tmp_path))
+        assert "-print('bye')" in d
+        assert "+print('bye')" not in d
