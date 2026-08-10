@@ -97,11 +97,9 @@ class PreviewConfig:
 
 @dataclass
 class EvaluationConfig:
-    enabled: bool = False
+    enabled: bool = True
     max_retries: int = 3
-    stages: list[str] = field(
-        default_factory=lambda: ["lint", "test", "preview", "introspect", "html_diff"]
-    )
+    stages: list[str] = field(default_factory=lambda: ["lint", "test", "introspect"])
     test_command: str = ""
     lint_command: str = ""
     screenshot: bool = False
@@ -362,9 +360,9 @@ def parse_config(path: str) -> Config:
 
     eval_data = raw.get("evaluation", {})
     evaluation = EvaluationConfig(
-        enabled=eval_data.get("enabled", False),
+        enabled=eval_data.get("enabled", True),
         max_retries=eval_data.get("max_retries", 3),
-        stages=eval_data.get("stages", ["lint", "test", "preview", "introspect", "html_diff"]),
+        stages=eval_data.get("stages", ["lint", "test", "introspect"]),
         test_command=eval_data.get("test_command", ""),
         lint_command=eval_data.get("lint_command", ""),
         screenshot=eval_data.get("screenshot", False),

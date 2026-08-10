@@ -370,3 +370,27 @@ class TestObservabilityConfig:
         )
         config = parse_config(str(toml_path))
         assert validate_config(config) == []
+
+
+class TestEvaluationConfig:
+    def _toml(self, extra: str = ""):
+        return (
+            '[project]\nname = "TestApp"\nlanguage = "python"\n\n'
+            '[llm]\napi_url = "https://api.example.com"\napi_key_env = "KEY"\nmodel = "m1"\n\n'
+            '[modes.quick]\nlabel = "Q"\n' + extra
+        )
+
+    def test_evaluation_defaults_when_absent(self, tmp_path):
+        p = tmp_path / ".live-edit.toml"
+        p.write_text(self._toml())
+        config = parse_config(str(p))
+        assert config.evaluation.enabled is True
+        assert config.evaluation.stages == ["lint", "test", "introspect"]
+        assert config.evaluation.max_retries == 3
+
+    def test_evaluation_parses_explicit_overrides(self, tmp_path):
+        p = tmp_path / ".live-edit.toml"
+        p.write_text(self._toml('[evaluation]\nenabled = false\nstages = ["lint"]\n'))
+        config = parse_config(str(p))
+        assert config.evaluation.enabled is False
+        assert config.evaluation.stages == ["lint"]

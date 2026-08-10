@@ -11,6 +11,7 @@ import pytest
 from live_edit.config import (
     Config,
     ErrorTranslations,
+    EvaluationConfig,
     HooksConfig,
     LLMConfig,
     ModeConfig,
@@ -1079,6 +1080,7 @@ def _make_test_config():
             ),
         },
         errors=ErrorTranslations(quick={}, deep={}),
+        evaluation=EvaluationConfig(enabled=False),
     )
 
 
