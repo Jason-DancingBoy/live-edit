@@ -189,13 +189,15 @@ Deletable if and only if:
 1. `safe_path(path, project_root)` stays inside the project (safety.py:99).
 2. Target exists and is a regular file (refuse directories and non-existent paths).
 3. **Any** of:
-   a. File is **not in the worktree HEAD commit tree** — i.e. created this session / untracked → deletable. Implemented as `git -C <worktree> ls-tree HEAD -- <path>` (non-empty = pre-existing).
+   a. File is **not in the main branch commit tree** — i.e. created this session and not yet merged into main → deletable. Implemented as `git -C <worktree> ls-tree main -- <path>` (falling back to `master`; non-empty = pre-existing). This is the session branch (`live-edit/<session_id>`) because the session branch diverges from main — a file committed only to the session branch is NOT in main, so it stays deletable until the session is merged. Files merged into main become protected.
    b. File is inside `overwrite_allowed_dirs` (default `static`, `public`, `assets`) — existing `check_write_allowed` path.
    c. `allow_overwrite_existing=true` — user explicitly opted into deleting existing source.
 
-Semantics: files committed in a prior session become "pre-existing" in a new session's HEAD and are protected; session artifacts are deletable.
+Semantics: files merged into main are "pre-existing" and protected; anything the session created that has not reached main (untracked, or committed only on the session branch) is session-owned and deletable until merge. Quick-mode approval still shows a full-delete diff preview (`is_write=True`), so a human confirms every deletion.
 
 **Known edge case**: untracked files that pre-existed the session (never committed) also match (a) and are deletable. Accepted — they are not in any commit, and quick-mode approval shows a full-delete diff preview.
+
+**Conservative fallback**: if neither `main` nor `master` can be resolved (repo with no commits, or a non-git directory), the file is treated as protected — never collapse to allow-all.
 
 ### Supporting changes
 
