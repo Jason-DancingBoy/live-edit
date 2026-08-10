@@ -219,6 +219,22 @@ def setup_live_edit(
                 )
             )
 
+            # Surface a crashed task promptly: the engine's finally that emits a
+            # trailing None never runs when create_worktree raises (it's outside
+            # run_edit_session's try), so the queue loop would otherwise block on
+            # the 180s timeout. The done-callback converts a crash into queue
+            # events that flow through the normal yield path immediately.
+            def _surface_task_error(t):
+                try:
+                    exc = t.exception()
+                except asyncio.CancelledError:
+                    return
+                if exc is not None:
+                    session.queue.put_nowait({"type": "error", "error": f"会话执行出错: {exc}"})
+                    session.queue.put_nowait(None)
+
+            task.add_done_callback(_surface_task_error)
+
             try:
                 while True:
                     try:
@@ -255,8 +271,8 @@ def setup_live_edit(
                 await task
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'error': f'会话执行出错: {e}'})}\n\n"
+            except Exception:
+                pass  # error already surfaced via _surface_task_error
 
         return StreamingResponse(
             event_generator(),
@@ -317,6 +333,18 @@ def setup_live_edit(
                 )
             )
 
+            # Surface a crashed task promptly (see start_stream for rationale).
+            def _surface_task_error(t):
+                try:
+                    exc = t.exception()
+                except asyncio.CancelledError:
+                    return
+                if exc is not None:
+                    session.queue.put_nowait({"type": "error", "error": f"会话执行出错: {exc}"})
+                    session.queue.put_nowait(None)
+
+            task.add_done_callback(_surface_task_error)
+
             try:
                 while True:
                     try:
@@ -346,8 +374,8 @@ def setup_live_edit(
                 await task
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'error': f'会话执行出错: {e}'})}\n\n"
+            except Exception:
+                pass  # error already surfaced via _surface_task_error
 
         return StreamingResponse(
             event_generator(),

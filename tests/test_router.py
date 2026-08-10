@@ -291,10 +291,15 @@ class TestStreamEndpoint:
 
 class TestContinueErrorSurface:
     def test_crashed_continue_task_yields_error_event(self, tmp_path, monkeypatch):
-        """A crashed continue task must surface as an SSE error event, not kill
-        the stream silently. Regression: the old code did a bare `await task`
-        after the queue loop, so a crashing task raised out of the generator and
-        the SSE stream died with no user-facing event."""
+        """A crashed continue task must surface as an SSE error event PROMPTLY,
+        not kill the stream silently and not wait for the 180s queue timeout.
+
+        Regression: the old code did a bare `await task` after the queue loop, so
+        a crashing task raised out of the generator and the SSE stream died with
+        no user-facing event. The follow-up requires the crash be surfaced via a
+        task done-callback (engine's trailing None never fires when
+        create_worktree raises outside run_edit_session's try), so the error
+        event appears among the FIRST SSE events — before any 会话超时."""
         from unittest.mock import MagicMock
 
         from fastapi import FastAPI
@@ -312,10 +317,10 @@ class TestContinueErrorSurface:
         store.add(session)
 
         async def _boom(**kwargs):
-            # Simulate a task that ends the stream loop then crashes mid-flight
-            # (e.g. CalledProcessError from `git worktree add` on a /continue).
-            session = kwargs["session"]
-            session.queue.put_nowait(None)
+            # Simulate the crash path: the task raises immediately without ever
+            # emitting its own events (e.g. CalledProcessError from `git worktree
+            # add` on a /continue). The router's done-callback must turn this into
+            # a queue error event + trailing None promptly.
             raise RuntimeError("boom")
 
         monkeypatch.setattr(router_mod, "continue_edit_session", _boom)
@@ -343,7 +348,12 @@ class TestContinueErrorSurface:
                         data_lines.append(line)
 
         assert data_lines, "expected at least one SSE data line"
-        assert any('"type": "error"' in line and "boom" in line for line in data_lines)
+        # The error must be surfaced promptly: it should be the FIRST event, and
+        # there must be no misleading 会话超时 (which would mean we waited for the
+        # 180s timeout instead of the done-callback).
+        assert '"type": "error"' in data_lines[0]
+        assert "boom" in data_lines[0]
+        assert not any("会话超时" in line for line in data_lines)
 
 
 class TestHealthCheck:
