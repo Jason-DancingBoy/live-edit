@@ -394,3 +394,18 @@ class TestEvaluationConfig:
         config = parse_config(str(p))
         assert config.evaluation.enabled is False
         assert config.evaluation.stages == ["lint"]
+
+
+class TestCriticMaxRounds:
+    def test_default_is_2(self):
+        from live_edit.config import EvaluationConfig
+
+        assert EvaluationConfig().critic_max_rounds == 2
+
+    def test_parses_from_toml(self, tmp_path):
+        from live_edit.config import parse_config
+
+        toml_path = tmp_path / ".live-edit.toml"
+        toml_path.write_text("[evaluation]\ncritic_max_rounds = 4\n")
+        cfg = parse_config(str(toml_path))
+        assert cfg.evaluation.critic_max_rounds == 4

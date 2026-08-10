@@ -104,6 +104,7 @@ class EvaluationConfig:
     lint_command: str = ""
     screenshot: bool = False
     preview_pages: list[str] = field(default_factory=lambda: ["/"])
+    critic_max_rounds: int = 2
 
 
 @dataclass
@@ -367,6 +368,7 @@ def parse_config(path: str) -> Config:
         lint_command=eval_data.get("lint_command", ""),
         screenshot=eval_data.get("screenshot", False),
         preview_pages=eval_data.get("preview_pages", ["/"]),
+        critic_max_rounds=eval_data.get("critic_max_rounds", 2),
     )
 
     observability = _parse_observability(raw.get("observability", {}))
