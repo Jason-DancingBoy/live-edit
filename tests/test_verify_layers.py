@@ -29,19 +29,31 @@ async def test_run_test_command_skipped_when_empty():
 
 
 @pytest.mark.asyncio
-async def test_run_test_command_timeout_kills_child(tmp_path):
-    import asyncio
-    import contextlib
-
-    # 需要真实超时：命令 sleep 很久，通过 monkeypatch 缩短 wait_for 不可行，
-    # 改为直接构造一个立即超时的场景并断言返回 fail 而非悬挂。
-    # 这里用短命令 + 手动 asyncio.wait_for 包裹验证返回值形态。
-    from live_edit.verify.layers import run_test_command as _rtc
-
+async def test_run_test_command_file_not_found_error(tmp_path):
     # 覆盖：给一个必然不存在的二进制，验证 FileNotFoundError → fail 分支
-    r = await _rtc(str(tmp_path), "definitely_not_a_real_binary_xyz 2>&1")
+    r = await run_test_command(str(tmp_path), "definitely_not_a_real_binary_xyz 2>&1")
     assert r["status"] == "fail"
     assert "error" in r["detail"]
+
+
+@pytest.mark.asyncio
+async def test_run_test_command_timeout_kills_child(tmp_path, monkeypatch):
+    import asyncio as _asyncio
+
+    async def _raise_timeout(coro, *args, **kwargs):
+        # wait_for 被 patch 后 proc.communicate() 的协程不会被执行，
+        # 显式 close 避免 "coroutine was never awaited" 警告。
+        coro.close()
+        raise _asyncio.TimeoutError("timed out")
+
+    # 强制 asyncio.wait_for 抛 TimeoutError，真实走到 layers.py 的 kill+reap 分支。
+    # sleep 5 会真实启动子进程，kill/wait 回收的是真进程。
+    monkeypatch.setattr("live_edit.verify.layers.asyncio.wait_for", _raise_timeout)
+
+    r = await run_test_command(str(tmp_path), "sleep 5")
+    assert r["status"] == "fail"
+    assert "child process killed" in r["detail"]["error"]
+    assert "timeout" in r["detail"]["error"].lower()
 
 
 @pytest.mark.asyncio
