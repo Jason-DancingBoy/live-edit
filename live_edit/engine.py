@@ -181,6 +181,8 @@ class EditSession:
         self._outcome: str = "failed"  # terminal outcome: completed/cancelled/failed
         self._created_at = time.time()
         self._worktree_path: str = ""
+        self.base_ref: str = ""
+        self.base_session_id: str = ""
         self._merged: bool = False
         self._cancelled = asyncio.Event()
         self._auto_approve: bool = False
@@ -255,10 +257,20 @@ class SessionStore:
                 "session_expired", target=session_id, session_id=session_id, result="expired"
             )
 
+    def _active_count(self) -> int:
+        """Count sessions whose agent loop has not yet finished."""
+        return sum(1 for s in self._sessions.values() if not s._done)
+
     def add(self, session: EditSession) -> bool:
-        """Add a session. Returns False if at capacity."""
+        """Add a session. Returns False if too many active sessions exist.
+
+        Completed sessions (_done=True) stay in the registry so the preview
+        proxy, /continue, and admin still find them, but they no longer
+        consume capacity — otherwise a few finished conversations hard-block
+        every new session with 503 until the TTL drains.
+        """
         self._expire_stale()
-        if len(self._sessions) >= self.max_active:
+        if self._active_count() >= self.max_active:
             return False
         self._sessions[session.id] = session
         return True
@@ -289,7 +301,7 @@ class SessionStore:
     @property
     def count(self) -> int:
         self._expire_stale()
-        return len(self._sessions)
+        return self._active_count()
 
 
 # ── Timeline ──
@@ -594,7 +606,7 @@ async def run_edit_session(
 
     # ── Create isolated worktree for this session ──
     if not session._worktree_path:
-        session._worktree_path = vcs.create_worktree(session.id)
+        session._worktree_path = vcs.create_worktree(session.id, base_ref=session.base_ref)
         session._merged = False
     _root = session._worktree_path
 
@@ -1306,6 +1318,7 @@ def _persist_session(session: EditSession, storage: Storage, messages: list[dict
             commit_hash=session._commit_hash,
             messages_json=msgs_json,
             mode=session._mode,
+            base_session_id=session.base_session_id,
         )
     except Exception as e:
         logger.warning("Failed to persist session %s: %s", session.id, e)

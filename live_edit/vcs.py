@@ -99,7 +99,7 @@ class VCS(ABC):
     # ── Worktree / branch isolation (new) ──
 
     @abstractmethod
-    def create_worktree(self, session_id: str) -> str:
+    def create_worktree(self, session_id: str, base_ref: str = "") -> str:
         """Create an isolated worktree for a session. Returns the worktree path."""
         ...
 
@@ -255,7 +255,7 @@ class GitVCS(VCS):
         """
         return os.path.isfile(os.path.join(path, ".git"))
 
-    def create_worktree(self, session_id: str) -> str:
+    def create_worktree(self, session_id: str, base_ref: str = "") -> str:
         worktree_path = session_worktree_path(session_id)
         os.makedirs(_WORKTREE_ROOT, exist_ok=True)
 
@@ -268,7 +268,7 @@ class GitVCS(VCS):
             return worktree_path
 
         branch = f"live-edit/{session_id}"
-        main = self.get_main_branch()
+        ref = base_ref if base_ref else self.get_main_branch()
         if self._branch_exists(branch):
             # Session branch survived a worktree removal — check it out directly.
             subprocess.run(
@@ -281,7 +281,7 @@ class GitVCS(VCS):
             )
         else:
             subprocess.run(
-                ["git", "worktree", "add", "--detach", worktree_path, main],
+                ["git", "worktree", "add", "--detach", worktree_path, ref],
                 capture_output=True,
                 text=True,
                 timeout=30,

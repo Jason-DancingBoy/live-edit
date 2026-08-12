@@ -24,6 +24,7 @@ class Storage(ABC):
         commit_hash: str,
         messages_json: str,
         mode: str,
+        base_session_id: str = "",
     ) -> None: ...
 
     @abstractmethod
@@ -86,6 +87,10 @@ class SQLiteStorage(Storage):
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "ALTER TABLE live_edit_sessions ADD COLUMN base_session_id TEXT DEFAULT ''"
+            )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS session_embeddings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,12 +162,14 @@ class SQLiteStorage(Storage):
         commit_hash: str,
         messages_json: str,
         mode: str,
+        base_session_id: str = "",
     ) -> None:
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO live_edit_sessions
-               (session_id, request, committed, files, commit_hash, messages, mode, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+               (session_id, request, committed, files, commit_hash, messages, mode,
+                base_session_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
             (
                 session_id,
                 request,
@@ -171,6 +178,7 @@ class SQLiteStorage(Storage):
                 commit_hash,
                 messages_json,
                 mode,
+                base_session_id,
             ),
         )
         conn.commit()

@@ -37,6 +37,7 @@ logger = logging.getLogger("live-edit.router")
 class StreamRequest(BaseModel):
     request: str
     mode: str = "quick"
+    base_session_id: str = ""
 
 
 class ContinueRequest(BaseModel):
@@ -56,6 +57,19 @@ class KnowledgeUpload(BaseModel):
     source_path: str
     content: str
     metadata: str = "{}"
+
+
+def _resolve_base_ref(storage, base_session_id: str) -> str:
+    """Return the base commit hash for a session fork, or raise ValueError."""
+    if not base_session_id:
+        return ""
+    base_sess = storage.get_session_detail(base_session_id)
+    if not base_sess:
+        raise ValueError("无效的基会话")
+    commit = base_sess.get("commit_hash", "")
+    if not base_sess.get("committed") or not commit:
+        raise ValueError("基会话尚未合并，无法作为基础")
+    return commit
 
 
 def _resolve_api_key(config) -> str:
@@ -176,6 +190,20 @@ def setup_live_edit(
         session_id = f"le_{uuid.uuid4().hex[:12]}"
         session = EditSession(session_id, req.request)
 
+        if req.base_session_id:
+            try:
+                session.base_ref = _resolve_base_ref(storage, req.base_session_id)
+            except ValueError as e:
+                audit_log.record(
+                    "session_rejected",
+                    target=session_id,
+                    session_id=session_id,
+                    result="blocked",
+                    detail={"reason": "invalid_base", "base_session_id": req.base_session_id},
+                )
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            session.base_session_id = req.base_session_id
+
         if not session_store.add(session):
             audit_log.record(
                 "session_rejected",
@@ -193,8 +221,15 @@ def setup_live_edit(
             "session_start",
             target=session_id,
             session_id=session_id,
-            detail={"mode": mode},
+            detail={"mode": mode, "base_session_id": req.base_session_id or ""},
         )
+        if req.base_session_id:
+            audit_log.record(
+                "session_fork",
+                target=session_id,
+                session_id=session_id,
+                detail={"base_session_id": req.base_session_id, "base_commit": session.base_ref},
+            )
         metrics.inc("live_edit_sessions_total", {"outcome": "started"})
         set_session_id(session_id)
 
@@ -316,6 +351,7 @@ def setup_live_edit(
         set_session_id(session_id)
 
         async def event_generator() -> AsyncIterator[str]:
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
             task = asyncio.ensure_future(
                 continue_edit_session(
                     session=session,

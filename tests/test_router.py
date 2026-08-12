@@ -7,6 +7,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from live_edit.router import _resolve_base_ref
+
 
 class FakeProvider:
     """Provider that returns predetermined content_blocks."""
@@ -287,6 +289,35 @@ class TestStreamEndpoint:
         assert response.status_code == 404
 
 
+class TestSessionFork:
+    def test_resolve_base_ref_empty(self):
+        assert _resolve_base_ref(MagicMock(), "") == ""
+
+    def test_resolve_base_ref_unknown_raises(self):
+        storage = MagicMock()
+        storage.get_session_detail.return_value = None
+        with pytest.raises(ValueError):
+            _resolve_base_ref(storage, "nope")
+
+    def test_resolve_base_ref_unmerged_raises(self):
+        storage = MagicMock()
+        storage.get_session_detail.return_value = {"committed": 0, "commit_hash": ""}
+        with pytest.raises(ValueError):
+            _resolve_base_ref(storage, "s0")
+
+    def test_resolve_base_ref_returns_commit(self):
+        storage = MagicMock()
+        storage.get_session_detail.return_value = {"committed": 1, "commit_hash": "abc"}
+        assert _resolve_base_ref(storage, "s1") == "abc"
+
+    def test_stream_unknown_base_returns_400(self, client):
+        resp = client.post(
+            "/live-edit/stream",
+            json={"request": "x", "mode": "quick", "base_session_id": "unknown"},
+        )
+        assert resp.status_code == 400
+
+
 class TestContinueErrorSurface:
     def test_crashed_continue_task_yields_error_event(self, tmp_path, monkeypatch):
         """A crashed continue task must surface as an SSE error event PROMPTLY,
@@ -346,11 +377,13 @@ class TestContinueErrorSurface:
                         data_lines.append(line)
 
         assert data_lines, "expected at least one SSE data line"
-        # The error must be surfaced promptly: it should be the FIRST event, and
-        # there must be no misleading 会话超时 (which would mean we waited for the
+        # The error must be surfaced promptly: immediately after the leading
+        # session ack (emitted for /continue parity with /stream), and there
+        # must be no misleading 会话超时 (which would mean we waited for the
         # 180s timeout instead of the done-callback).
-        assert '"type": "error"' in data_lines[0]
-        assert "boom" in data_lines[0]
+        assert '"type": "session"' in data_lines[0]
+        assert '"type": "error"' in data_lines[1]
+        assert "boom" in data_lines[1]
         assert not any("会话超时" in line for line in data_lines)
 
 
@@ -598,14 +631,22 @@ class TestContinueRecovery:
 
         assert resp.status_code == 404
 
-    def test_503_when_store_at_capacity(self, make_recovery_app):
+    def test_completed_session_does_not_block_continue(self, make_recovery_app):
+        """A finished session no longer consumes the capacity slot.
+
+        Previously a completed session stayed in the store and blocked every
+        new session with 503 until the TTL drained. Now _done sessions are
+        excluded from the active count, so /continue succeeds even when the
+        single slot was filled and finished.
+        """
         app = make_recovery_app(_recoverable_session_detail(), max_active=1)
         client = TestClient(app)
 
-        # Fill the single slot via /stream (adds to store synchronously)
+        # Fill the single slot via /stream. The agent loop runs to completion,
+        # so the session is _done=True and no longer counts toward capacity.
         with client.stream("POST", "/live-edit/stream", json={"request": "fill", "mode": "quick"}):
             pass
 
         resp = client.post("/live-edit/continue/s-recover", json={"request": "keep going"})
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200

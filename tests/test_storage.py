@@ -98,6 +98,33 @@ class TestSQLiteStorage:
         assert sessions[2]["request"] == "Request 0"
         assert sessions[-1]["request"] == "Request 0"
 
+    def test_base_session_id_column_exists(self, storage):
+        conn = storage._get_conn()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(live_edit_sessions)")]
+        assert "base_session_id" in cols
+
+    def test_base_session_id_migration_idempotent(self, tmp_path):
+        db_path = str(tmp_path / "idem.db")
+        SQLiteStorage(db_path)
+        SQLiteStorage(db_path)  # second _init_db must not raise on duplicate column
+
+    def test_save_session_round_trips_base_session_id(self, storage):
+        storage.save_session(
+            session_id="fork1",
+            request="Continue from base",
+            committed=True,
+            files=["a.py"],
+            commit_hash="abc123",
+            messages_json="[]",
+            mode="quick",
+            base_session_id="base1",
+        )
+        detail = storage.get_session_detail("fork1")
+        assert detail is not None
+        assert detail["base_session_id"] == "base1"
+        sessions = storage.get_sessions(limit=10)
+        assert sessions[0]["base_session_id"] == "base1"
+
 
 class TestSessionEmbeddings:
     @pytest.fixture

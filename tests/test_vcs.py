@@ -241,6 +241,71 @@ class TestListUnmergedBranches:
         assert "B" in b_entry["subject"]
 
 
+class TestCreateWorktreeFork:
+    def test_forks_from_base_ref_commit(self, git_repo):
+        from live_edit.vcs import GitVCS
+
+        vcs = GitVCS(git_repo)
+        # Commit A (the future fork base), then commit B on main past it
+        (git_repo / "a.txt").write_text("a")
+        subprocess.run(["git", "add", "."], cwd=str(git_repo), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "base"], cwd=str(git_repo), capture_output=True
+        )
+        base_hash = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        (git_repo / "b.txt").write_text("b")
+        subprocess.run(["git", "add", "."], cwd=str(git_repo), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "advance"], cwd=str(git_repo), capture_output=True
+        )
+
+        wt_path = vcs.create_worktree("sess-fork", base_ref=base_hash)
+
+        # Worktree HEAD is the base commit, not main HEAD
+        head = subprocess.run(
+            ["git", "-C", wt_path, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert head == base_hash
+        # The base commit's files are present, main-only files are not (in the worktree)
+        assert (Path(wt_path) / "a.txt").exists()
+        assert not (Path(wt_path) / "b.txt").exists()
+        # Session branch points at the base commit
+        branch_head = subprocess.run(
+            ["git", "rev-parse", "--short", "live-edit/sess-fork"],
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch_head == base_hash
+        vcs.discard_session_branch("sess-fork", worktree_path=wt_path)
+
+    def test_empty_base_ref_forks_from_main(self, git_repo):
+        from live_edit.vcs import GitVCS
+
+        vcs = GitVCS(git_repo)
+        wt_path = vcs.create_worktree("sess-main")
+        head = subprocess.run(
+            ["git", "-C", wt_path, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        main_head = subprocess.run(
+            ["git", "rev-parse", "--short", vcs.get_main_branch()],
+            cwd=str(git_repo),
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert head == main_head
+        vcs.discard_session_branch("sess-main", worktree_path=wt_path)
+
+
 class TestCleanupStaleWorktrees:
     def test_keeps_fresh_worktree_removes_stale(self, git_repo):
         vcs = GitVCS(str(git_repo), worktree_ttl=86400)

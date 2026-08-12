@@ -209,7 +209,10 @@ class AnthropicCompatibleProvider(Provider):
                     await asyncio.sleep(delay)
 
         logger.error("Provider exhausted %d retries. Last error: %s", self._max_retries, last_error)
-        return []
+        raise ProviderExhaustedError(
+            f"Provider exhausted {self._max_retries} retries. Last error: {last_error}",
+            status=last_error.status if isinstance(last_error, _RetryableError) else 0,
+        )
 
 
 # ── Internal error types for retry control ──
@@ -226,6 +229,14 @@ class _RetryableError(Exception):
 
 class _FatalError(Exception):
     """Error that should NOT be retried (4xx except 429)."""
+
+    def __init__(self, message: str, status: int = 0):
+        super().__init__(message)
+        self.status = status
+
+
+class ProviderExhaustedError(Exception):
+    """Raised when retries are exhausted (terminal failure, do not retry)."""
 
     def __init__(self, message: str, status: int = 0):
         super().__init__(message)

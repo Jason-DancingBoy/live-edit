@@ -233,6 +233,14 @@ class TestSessionStore:
         store.add(EditSession("s1", "A"))
         assert store.count == 1
 
+    def test_done_session_frees_capacity_slot(self):
+        store = SessionStore(max_active=1, ttl_seconds=3600)
+        s1 = EditSession("s1", "A")
+        assert store.add(s1) is True
+        s1._done = True  # agent loop finished
+        s2 = EditSession("s2", "B")
+        assert store.add(s2) is True  # completed session no longer occupies the slot
+
 
 # ── run_edit_session (mock provider) ──
 
@@ -1836,3 +1844,51 @@ class TestEvalFailureNote:
         assert "测试" in note
         assert "自动检查没通过" in note
         assert _eval_failure_note("unknown_stage").startswith("不过")
+
+
+def test_edit_session_defaults_fork_fields():
+    session = EditSession("s1", "Fix")
+    assert session.base_ref == ""
+    assert session.base_session_id == ""
+
+
+class TestSessionForkEngine:
+    @pytest.mark.asyncio
+    async def test_run_edit_session_passes_base_ref_to_worktree(self):
+        provider = FakeProvider(
+            [[{"type": "text", "text": "ok"}]]
+        )
+        mock_vcs = MagicMock()
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+
+        session = EditSession("s1", "Add a button")
+        session.base_ref = "abc123"
+        store = SessionStore(max_active=10, ttl_seconds=3600)
+        store.add(session)
+
+        await run_edit_session(
+            session=session,
+            provider=provider,
+            vcs=mock_vcs,
+            storage=mock_storage,
+            config=_make_test_config(),
+            mode="quick",
+            session_store=store,
+        )
+
+        assert mock_vcs.create_worktree.call_args.kwargs["base_ref"] == "abc123"
+
+    def test_persist_session_forwards_base_session_id(self):
+        from live_edit.engine import _persist_session
+
+        mock_storage = MagicMock()
+        mock_storage.save_session = MagicMock()
+        session = EditSession("s1", "Add a button")
+        session.base_session_id = "base1"
+        session._committed = True
+        session._commit_hash = "abc123"
+
+        _persist_session(session, mock_storage, messages=[{"role": "user", "content": "hi"}])
+
+        assert mock_storage.save_session.call_args.kwargs["base_session_id"] == "base1"
