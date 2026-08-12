@@ -47,6 +47,14 @@ class Storage(ABC):
     def delete_old_embeddings(self, keep_count: int) -> None:
         """Delete oldest embeddings, keeping at most `keep_count` most recent rows."""
 
+    def save_evidence(self, session_id: str, evidence_json: str) -> None:
+        """Persist verify evidence. Default no-op for custom storages."""
+        return None
+
+    def get_evidence(self, session_id: str) -> str | None:
+        """Return stored evidence JSON, or None. Default: no evidence."""
+        return None
+
 
 class SQLiteStorage(Storage):
     """Default: SQLite-based session storage."""
@@ -72,6 +80,22 @@ class SQLiteStorage(Storage):
             except Exception:
                 pass
         return self._local.conn  # type: ignore[no-any-return]
+
+    def save_evidence(self, session_id: str, evidence_json: str) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO session_evidence (session_id, evidence) VALUES (?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET evidence=excluded.evidence, "
+            "updated_at=datetime('now')",
+            (session_id, evidence_json),
+        )
+        conn.commit()
+
+    def get_evidence(self, session_id: str) -> str | None:
+        row = self._get_conn().execute(
+            "SELECT evidence FROM session_evidence WHERE session_id=?", (session_id,)
+        ).fetchone()
+        return row["evidence"] if row else None
 
     def _init_db(self):
         conn = self._get_conn()
@@ -147,6 +171,13 @@ class SQLiteStorage(Storage):
                 file_hash TEXT,
                 chunk_count INTEGER NOT NULL,
                 created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_evidence (
+                session_id TEXT PRIMARY KEY,
+                evidence TEXT NOT NULL,
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
