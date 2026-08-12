@@ -1,5 +1,6 @@
 # live_edit/verify/evidence.py
 """Evidence model for verify-then-approve."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field

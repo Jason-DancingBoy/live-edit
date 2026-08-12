@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import sys
 
 if sys.version_info >= (3, 11):
@@ -577,8 +578,23 @@ def detect_project(root: str) -> dict:
                     info["framework"] = "flask"
                 elif any("django" in d.lower() for d in deps):
                     info["framework"] = "django"
+                pytest_opts = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+                testpaths = pytest_opts.get("testpaths", [])
+                if testpaths:
+                    joined = " ".join(shlex.quote(p) for p in testpaths[:3])
+                    info["test_command"] = f"python -m pytest {joined} -q --tb=short"
+                elif os.path.exists(os.path.join(root, "pytest.ini")) or os.path.exists(
+                    os.path.join(root, "tox.ini")
+                ):
+                    info["test_command"] = "python -m pytest -q --tb=short"
             except Exception:
                 pass
+        if info["framework"] == "fastapi" and (
+            os.path.exists(os.path.join(root, "backend", "main.py"))
+            or os.path.exists(os.path.join(root, "main.py"))
+        ):
+            info["port"] = 8000
+            info["health_url"] = f"http://127.0.0.1:{info['port']}/live-edit/health"
         return info
 
     # Node.js
@@ -676,5 +692,9 @@ def generate_default_config(root: str, project_info: dict | None = None) -> Conf
             deep={},
         ),
         preview=PreviewConfig(),
+        verify=VerifyConfig(
+            test_command=info.get("test_command", ""),
+            health_url=info.get("health_url", ""),
+        ),
         memory=MemoryConfig(),  # new; session_memory now delegated via the property
     )

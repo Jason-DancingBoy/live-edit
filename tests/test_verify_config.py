@@ -14,7 +14,7 @@ def test_verify_config_defaults():
     cfg = VerifyConfig()
     assert cfg.enabled is True
     assert cfg.max_retry == 3
-    assert cfg.test_command == ""          # 方案 A：默认不跑测试，测试归 evaluation
+    assert cfg.test_command == ""  # 方案 A：默认不跑测试，测试归 evaluation
     assert cfg.health_url == ""
     assert cfg.semantic_enabled is False
     assert cfg.rules.max_files == 10

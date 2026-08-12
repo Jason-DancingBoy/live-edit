@@ -272,9 +272,7 @@ class TestAnthropicCompatibleProvider:
             model="test-model",
             max_retries=2,
         )
-        mock_client = self._setup_mock_error(
-            status_code=429, headers={"Retry-After": "0"}
-        )
+        mock_client = self._setup_mock_error(status_code=429, headers={"Retry-After": "0"})
         inner_client = mock_client.__aenter__.return_value
 
         with (
@@ -282,9 +280,7 @@ class TestAnthropicCompatibleProvider:
             patch("live_edit.provider.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ProviderExhaustedError) as exc_info,
         ):
-            await provider.call_with_tools(
-                messages=[{"role": "user", "content": "Hi"}], tools=[]
-            )
+            await provider.call_with_tools(messages=[{"role": "user", "content": "Hi"}], tools=[])
 
         assert exc_info.value.status == 429
         assert "retries" in str(exc_info.value)
@@ -306,9 +302,7 @@ class TestAnthropicCompatibleProvider:
             patch("live_edit.provider.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(_FatalError) as exc_info,
         ):
-            await provider.call_with_tools(
-                messages=[{"role": "user", "content": "Hi"}], tools=[]
-            )
+            await provider.call_with_tools(messages=[{"role": "user", "content": "Hi"}], tools=[])
 
         assert "Unauthorized" in str(exc_info.value)
         assert inner_client.stream.call_count == 1
@@ -376,9 +370,7 @@ class TestAnthropicCompatibleProvider:
             patch("live_edit.provider.httpx.AsyncClient", return_value=mock_client),
             pytest.raises(ProviderExhaustedError) as exc_info,
         ):
-            await provider.call_with_tools(
-                messages=[{"role": "user", "content": "Hi"}], tools=[]
-            )
+            await provider.call_with_tools(messages=[{"role": "user", "content": "Hi"}], tools=[])
 
         assert exc_info.value.status == 500
         assert "retries" in str(exc_info.value)

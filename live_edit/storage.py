@@ -92,9 +92,11 @@ class SQLiteStorage(Storage):
         conn.commit()
 
     def get_evidence(self, session_id: str) -> str | None:
-        row = self._get_conn().execute(
-            "SELECT evidence FROM session_evidence WHERE session_id=?", (session_id,)
-        ).fetchone()
+        row = (
+            self._get_conn()
+            .execute("SELECT evidence FROM session_evidence WHERE session_id=?", (session_id,))
+            .fetchone()
+        )
         return row["evidence"] if row else None
 
     def _init_db(self):

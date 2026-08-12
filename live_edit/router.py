@@ -66,7 +66,7 @@ def _resolve_base_ref(storage, base_session_id: str) -> str:
     base_sess = storage.get_session_detail(base_session_id)
     if not base_sess:
         raise ValueError("无效的基会话")
-    commit = base_sess.get("commit_hash", "")
+    commit: str = base_sess.get("commit_hash", "")
     if not base_sess.get("committed") or not commit:
         raise ValueError("基会话尚未合并，无法作为基础")
     return commit

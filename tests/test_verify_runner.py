@@ -49,5 +49,7 @@ async def test_protected_file_blocks(tmp_path):
 @pytest.mark.asyncio
 async def test_previous_attempts_incremented(tmp_path):
     (tmp_path / "app.py").write_text("x = 1\n")
-    ev = await verify_change(str(tmp_path), ["app.py"], _cfg(), session_id="s1", previous_attempts=2)
+    ev = await verify_change(
+        str(tmp_path), ["app.py"], _cfg(), session_id="s1", previous_attempts=2
+    )
     assert ev.verify_attempts == 3

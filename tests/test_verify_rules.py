@@ -18,7 +18,9 @@ def test_disabled_always_auto():
 
 def test_out_of_scope_blocks():
     cfg = VerifyConfig()
-    ev = _ev(layers={"diff_safety": {"status": "fail", "out_of_scope": ["auth.py"], "scan_alerts": []}})
+    ev = _ev(
+        layers={"diff_safety": {"status": "fail", "out_of_scope": ["auth.py"], "scan_alerts": []}}
+    )
     d, reason = evaluate(ev, cfg)
     assert d == Decision.BLOCK
     assert "保护" in reason
@@ -26,7 +28,15 @@ def test_out_of_scope_blocks():
 
 def test_scan_alerts_block():
     cfg = VerifyConfig()
-    ev = _ev(layers={"diff_safety": {"status": "fail", "out_of_scope": [], "scan_alerts": [{"kind": "aws_access_key"}]}})
+    ev = _ev(
+        layers={
+            "diff_safety": {
+                "status": "fail",
+                "out_of_scope": [],
+                "scan_alerts": [{"kind": "aws_access_key"}],
+            }
+        }
+    )
     assert evaluate(ev, cfg)[0] == Decision.BLOCK
 
 
@@ -46,14 +56,22 @@ def test_unverified_human():
 
 def test_retry_exceeded_blocks():
     cfg = VerifyConfig(max_retry=3)
-    ev = _ev(verify_attempts=4, layers={"deterministic": {"status": "pass"}, "diff_safety": {"status": "pass"}})
+    ev = _ev(
+        verify_attempts=4,
+        layers={"deterministic": {"status": "pass"}, "diff_safety": {"status": "pass"}},
+    )
     assert evaluate(ev, cfg)[0] == Decision.BLOCK
 
 
 def test_large_diff_human():
     cfg = VerifyConfig()
     cfg.rules.max_files = 2
-    ev = _ev(layers={"deterministic": {"status": "pass"}, "diff_safety": {"status": "pass", "files_touched": ["a", "b", "c"]}})
+    ev = _ev(
+        layers={
+            "deterministic": {"status": "pass"},
+            "diff_safety": {"status": "pass", "files_touched": ["a", "b", "c"]},
+        }
+    )
     d, reason = evaluate(ev, cfg)
     assert d == Decision.HUMAN
     assert "文件" in reason
@@ -62,7 +80,12 @@ def test_large_diff_human():
 def test_skipped_det_degrades_human():
     """方案 A 关键规则：verify 默认不跑测试（deterministic skipped）→ 降级人工。"""
     cfg = VerifyConfig()
-    ev = _ev(layers={"deterministic": {"status": "skipped"}, "diff_safety": {"status": "pass", "files_touched": ["a.py"]}})
+    ev = _ev(
+        layers={
+            "deterministic": {"status": "skipped"},
+            "diff_safety": {"status": "pass", "files_touched": ["a.py"]},
+        }
+    )
     d, reason = evaluate(ev, cfg)
     assert d == Decision.HUMAN
     assert "降级" in reason

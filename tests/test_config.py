@@ -2,6 +2,7 @@
 
 from live_edit.config import (
     detect_project,
+    generate_default_config,
     parse_config,
     validate_config,
 )
@@ -330,6 +331,77 @@ class TestDetectProject:
         info = detect_project(str(tmp_path))
         assert info["vcs"] == "git"
         assert info["git_available"]
+
+    def test_testpaths_use_shlex_quote(self, tmp_path):
+        """Testpaths containing $(...) are single-quoted via shlex.quote in the
+        generated test_command, so a shell=True run cannot execute command
+        substitution; shlex.split round-trips to the literal original args."""
+        import shlex
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'test'\n"
+            "[tool.pytest.ini_options]\n"
+            "testpaths = ['tests/$(id)', 'tests/a b']\n"
+        )
+        info = detect_project(str(tmp_path))
+        assert info["test_command"].startswith("python -m pytest ")
+        # shlex.quote protection: the $(...) path is single-quoted in the command.
+        assert shlex.quote("tests/$(id)") in info["test_command"]
+        # shlex.split (shell-aware) recovers the literal args, no expansion.
+        parts = shlex.split(info["test_command"])
+        assert "tests/$(id)" in parts
+        assert "tests/a b" in parts
+
+    def test_testpaths_from_pytest_ini_fallback(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        (tmp_path / "pytest.ini").write_text("[pytest]\n")
+        info = detect_project(str(tmp_path))
+        assert info["test_command"] == "python -m pytest -q --tb=short"
+
+    def test_detects_fastapi_health_url(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'test'\ndependencies = ['fastapi']\n"
+        )
+        (tmp_path / "main.py").write_text("app = None\n")
+        info = detect_project(str(tmp_path))
+        assert info["framework"] == "fastapi"
+        assert info["port"] == 8000
+        assert info["health_url"] == "http://127.0.0.1:8000/live-edit/health"
+
+    def test_no_health_url_without_main_module(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'test'\ndependencies = ['fastapi']\n"
+        )
+        info = detect_project(str(tmp_path))
+        assert info["framework"] == "fastapi"
+        assert "health_url" not in info
+
+
+class TestGenerateDefaultConfig:
+    def test_wires_test_command_from_detection(self, tmp_path):
+        import shlex
+
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'test'\n"
+            "[tool.pytest.ini_options]\ntestpaths = ['tests/unit', 'tests/a b']\n"
+        )
+        cfg = generate_default_config(str(tmp_path))
+        assert cfg.verify.test_command
+        assert "tests/unit" in cfg.verify.test_command
+        assert shlex.quote("tests/a b") in cfg.verify.test_command
+
+    def test_wires_health_url_from_detection(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'test'\ndependencies = ['fastapi']\n"
+        )
+        (tmp_path / "main.py").write_text("app = None\n")
+        cfg = generate_default_config(str(tmp_path))
+        assert cfg.verify.health_url == "http://127.0.0.1:8000/live-edit/health"
+
+    def test_verify_defaults_empty_when_undetected(self, tmp_path):
+        cfg = generate_default_config(str(tmp_path))
+        assert cfg.verify.test_command == ""
+        assert cfg.verify.health_url == ""
 
 
 class TestObservabilityConfig:

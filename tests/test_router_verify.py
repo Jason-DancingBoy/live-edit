@@ -87,9 +87,7 @@ def _store_evidence(storage, session_id, decision):
 def test_merge_blocked_requires_reason(tmp_path):
     app, storage = _make_app(tmp_path, vcs=MagicMock())
     _store_evidence(storage, "s1", "block")
-    r = TestClient(app).post(
-        "/live-edit/admin/branches/s1/merge", headers={"X-Admin-Key": "k"}
-    )
+    r = TestClient(app).post("/live-edit/admin/branches/s1/merge", headers={"X-Admin-Key": "k"})
     assert r.status_code == 400
     assert r.json().get("blocked") is True
 
@@ -139,9 +137,7 @@ def test_merge_auto_approve_merges(tmp_path):
     vcs = _make_git_repo(tmp_path, "s1")
     app, storage = _make_app(tmp_path, vcs=vcs)
     _store_evidence(storage, "s1", "auto_approve")
-    r = TestClient(app).post(
-        "/live-edit/admin/branches/s1/merge", headers={"X-Admin-Key": "k"}
-    )
+    r = TestClient(app).post("/live-edit/admin/branches/s1/merge", headers={"X-Admin-Key": "k"})
     assert r.status_code == 200
     assert r.json()["decision"] == "auto_approve"
 

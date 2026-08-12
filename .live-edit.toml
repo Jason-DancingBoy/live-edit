@@ -1,0 +1,103 @@
+[project]
+name = "live-edit"
+language = "python"
+framework = "fastapi"
+root = "."
+
+[llm]
+provider = "anthropic_compatible"
+api_url = "https://api.deepseek.com/anthropic/v1/messages"
+api_key_env = "DEEPSEEK_API_KEY"
+model = "deepseek-v4-pro"
+
+[safety]
+allowed_dirs = ["."]
+overwrite_allowed_dirs = ["static", "public", "assets"]
+allow_overwrite_existing = false
+search_extensions = ["*.py", "*.html", "*.js", "*.css", "*.ts", "*.tsx", "*.md", "*.json", "*.toml", "*.yaml", "*.yml"]
+
+[timeouts]
+api_request = 180
+shell_command = 30
+approval = 300
+final_approval = 600
+session_ttl = 1800
+max_rounds = 15
+
+[sessions]
+max_active = 10
+
+[memory]
+enabled = true
+
+# L2 历史会话记忆：会话结束按文件切片向量化存储，检索时余弦+衰减+命中分排序。
+# 启用后 L3 只在 L2 禁用或空召回时兜底。
+[memory.long_term]
+enabled = true
+# gte-small 对中文短文本跨话题余弦偏高（0.6 下几乎全命中、L3 无法兜底），调到 0.85
+similarity_threshold = 0.85
+max_entries = 10
+recency_decay_rate = 0.01
+hit_count_weight = 0.05
+
+# L3 项目知识库：静态项目约定/架构知识，独立于会话历史。
+[memory.knowledge]
+enabled = true
+api_enabled = true
+knowledge_dir = ".live-edit/knowledge"
+chunk_size = 500
+chunk_overlap = 50
+max_entries = 20
+
+[hooks]
+
+[ui]
+default_mode = "quick"
+
+[modes.quick]
+label = "快速修改"
+approval = "per_tool"
+tools = "write"
+approve_for = ["edit_file", "write_file"]
+
+[modes.quick.prompt]
+base = """你是 live-edit 的全栈 Web 开发者 AI。"""
+user_persona = """非技术背景的用户。用自然语言描述需求，用通俗语言沟通，禁止展示代码。"""
+communication_rules = """用中文交流，禁止展示代码片段、文件路径、行号。从用户视角描述改动。"""
+
+[modes.deep]
+label = "深度开发"
+approval = "final"
+tools = "all"
+
+[modes.deep.prompt]
+base = """你是 live-edit 的开发者 AI 助手。"""
+user_persona = """专业开发者。理解代码和技术概念。"""
+communication_rules = """用中文交流，可以自由使用技术术语。展示关键代码片段。"""
+
+[modes.qa]
+label = "代码问答"
+approval = "none"
+tools = "readonly"
+
+[modes.qa.prompt]
+base = """你是 live-edit 的代码分析专家。"""
+user_persona = """想要理解代码的学习者。"""
+communication_rules = """用中文交流，清晰的代码引用。只能使用只读工具。"""
+
+[preview]
+enabled = false
+port_start = 19000
+port_end = 19050
+startup_timeout = 30
+base_url = "http://localhost:8083"
+
+[errors.quick]
+"old_string 在文件中未找到" = "AI 发现文件内容已变化，会重新读取后调整"
+"old_string 匹配了" = "AI 找到了多处匹配，会缩小范围重试"
+"路径越界" = "操作已自动阻止（访问了项目外的文件）"
+"命令包含危险操作" = "操作已自动阻止"
+"命令执行超时" = "命令耗时过长，已自动终止"
+"删除受保护文件被拒绝" = "该文件受保护，不能删除。新建的文件可以删，既有源码需要在配置里放开"
+"write_file 只能覆写" = "只能在该目录下创建或修改文件"
+

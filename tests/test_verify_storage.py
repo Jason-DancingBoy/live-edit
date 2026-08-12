@@ -26,12 +26,18 @@ def test_save_overwrites(tmp_path):
 def test_abstract_default_is_noop():
     class Noop(Storage):
         def save_session(self, *a, **k): ...
-        def get_sessions(self, *a, **k): return []
-        def get_session_detail(self, *a, **k): return None
+        def get_sessions(self, *a, **k):
+            return []
+
+        def get_session_detail(self, *a, **k):
+            return None
+
         def store_embedding(self, *a, **k): ...
-        def query_embeddings(self, *a, **k): return []
+        def query_embeddings(self, *a, **k):
+            return []
+
         def delete_old_embeddings(self, *a, **k): ...
 
     st = Noop()
-    st.save_evidence("s1", "{}")   # 不应抛
+    st.save_evidence("s1", "{}")  # 不应抛
     assert st.get_evidence("s1") is None

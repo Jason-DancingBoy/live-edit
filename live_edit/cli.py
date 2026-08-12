@@ -1,4 +1,4 @@
-"""CLI for live-edit: init and check commands."""
+"""CLI for live-edit: init, intake, and check commands."""
 
 import os
 import sys
@@ -72,6 +72,82 @@ def cmd_check(config_path: str) -> bool:
     return True
 
 
+def cmd_intake(
+    root: str = ".", *, dry_run: bool = False, force: bool = False, auto_yes: bool = False
+) -> bool:
+    """Run the full intake pipeline: scan → extra_context → verify → smoke test → write.
+
+    Returns True on success; False if the target directory is invalid, or if an
+    existing config was left untouched (matches cmd_init's --force semantics).
+    """
+    from .intake import run_intake
+
+    try:
+        result = run_intake(root, dry_run=dry_run, force=force, auto_yes=auto_yes)
+    except ValueError as e:
+        print(f"错误: {e}")
+        return False
+
+    p = result.profile
+    if dry_run:
+        print("[dry-run] 预演模式：不写任何文件（下方为将写入的内容）")
+    else:
+        print(f"项目: {p.name}")
+        print(f"  语言: {p.language}  框架: {p.framework or '无'}  端口: {p.port}")
+        if result.config_written:
+            print(f"  已写入配置: {result.config_path}")
+        else:
+            print(f"  配置未写入: {result.config_path}")
+        if result.smoke_written:
+            print(f"  已生成冒烟测试: {result.smoke_path}")
+    print()
+    for v in result.validation:
+        print(f"  - {v}")
+    if result.todos:
+        print()
+        print("待补充（TODO，建议优先处理）:")
+        for t in result.todos:
+            print(f"  - {t}")
+    print()
+    for m in result.messages:
+        print(m)
+    return dry_run or result.config_written
+
+
+def _toml_str(value: str) -> str:
+    """Escape a value for interpolation into a TOML basic (double-quoted) string.
+
+    User-provided strings commonly contain backslashes and double quotes; without
+    escaping they would produce invalid TOML (e.g. ``command = "pytest "tests\"""``).
+    Control characters (``\\n``, ``\\r``, ``\\t``) are escaped too so basic
+    strings stay valid TOML and round-trip losslessly.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def _toml_multiline(value: str) -> str:
+    """Escape a value for interpolation into a TOML multiline string.
+
+    Interior newlines are valid literal content inside ``\"\"\"...\"\"\"``, so they
+    are kept as-is. But the TOML spec trims the first newline immediately after
+    the opening delimiter, so a value that *starts* with a newline must escape
+    that leading newline to round-trip losslessly. Backslashes, quotes, CR, and
+    tab are escaped like in ``_toml_str``.
+    """
+    escaped = (
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\t", "\\t")
+    )
+    if escaped.startswith("\n"):
+        escaped = "\\n" + escaped[1:]
+    return escaped
+
+
 def _render_config(config) -> list[str]:
     """Render a Config object as TOML lines."""
     lines = []
@@ -84,37 +160,37 @@ def _render_config(config) -> list[str]:
     u = config.ui
 
     lines.append("[project]")
-    lines.append(f'name = "{p.name}"')
-    lines.append(f'language = "{p.language}"')
+    lines.append(f'name = "{_toml_str(p.name)}"')
+    lines.append(f'language = "{_toml_str(p.language)}"')
     if p.framework:
-        lines.append(f'framework = "{p.framework}"')
-    lines.append(f'root = "{p.root}"')
+        lines.append(f'framework = "{_toml_str(p.framework)}"')
+    lines.append(f'root = "{_toml_str(p.root)}"')
     extra = getattr(p, "extra_context", "")
     if extra:
-        lines.append(f'extra_context = """{extra}"""')
+        lines.append(f'extra_context = """{_toml_multiline(extra)}"""')
     lines.append("")
 
     lines.append("[llm]")
-    lines.append(f'provider = "{llm.provider}"')
-    lines.append(f'api_url = "{llm.api_url}"')
-    lines.append(f'api_key_env = "{llm.api_key_env}"')
-    lines.append(f'model = "{llm.model}"')
+    lines.append(f'provider = "{_toml_str(llm.provider)}"')
+    lines.append(f'api_url = "{_toml_str(llm.api_url)}"')
+    lines.append(f'api_key_env = "{_toml_str(llm.api_key_env)}"')
+    lines.append(f'model = "{_toml_str(llm.model)}"')
     lines.append("")
 
     lines.append("[safety]")
     if s.allowed_dirs:
-        dirs = ", ".join(f'"{d}"' for d in s.allowed_dirs)
+        dirs = ", ".join(f'"{_toml_str(d)}"' for d in s.allowed_dirs)
         lines.append(f"allowed_dirs = [{dirs}]")
     if s.overwrite_allowed_dirs:
-        dirs = ", ".join(f'"{d}"' for d in s.overwrite_allowed_dirs)
+        dirs = ", ".join(f'"{_toml_str(d)}"' for d in s.overwrite_allowed_dirs)
         lines.append(f"overwrite_allowed_dirs = [{dirs}]")
     lines.append(f"allow_overwrite_existing = {str(s.allow_overwrite_existing).lower()}")
     blocked = getattr(s, "blocked_commands", [])
     if blocked:
-        cmds = ", ".join(f'"{c}"' for c in blocked)
+        cmds = ", ".join(f'"{_toml_str(c)}"' for c in blocked)
         lines.append(f"blocked_commands = [{cmds}]")
     if s.search_extensions:
-        exts = ", ".join(f'"{e}"' for e in s.search_extensions)
+        exts = ", ".join(f'"{_toml_str(e)}"' for e in s.search_extensions)
         lines.append(f"search_extensions = [{exts}]")
     lines.append("")
 
@@ -133,32 +209,34 @@ def _render_config(config) -> list[str]:
 
     lines.append("[hooks]")
     if h.post_revert:
-        lines.append(f'post_revert = "{h.post_revert}"')
+        lines.append(f'post_revert = "{_toml_str(h.post_revert)}"')
     pre_commit = getattr(h, "pre_commit", "")
     if pre_commit:
-        lines.append(f'pre_commit = "{pre_commit}"')
+        lines.append(f'pre_commit = "{_toml_str(pre_commit)}"')
     lines.append("")
 
     lines.append("[ui]")
-    lines.append(f'default_mode = "{u.default_mode}"')
+    lines.append(f'default_mode = "{_toml_str(u.default_mode)}"')
     lines.append("")
 
     # Modes
     for mode_name, mode in (config.modes or {}).items():
         lines.append(f"[modes.{mode_name}]")
-        lines.append(f'label = "{mode.label}"')
-        lines.append(f'approval = "{mode.approval}"')
-        lines.append(f'tools = "{mode.tools}"')
+        lines.append(f'label = "{_toml_str(mode.label)}"')
+        lines.append(f'approval = "{_toml_str(mode.approval)}"')
+        lines.append(f'tools = "{_toml_str(mode.tools)}"')
         if mode.approve_for:
-            af = ", ".join(f'"{a}"' for a in mode.approve_for)
+            af = ", ".join(f'"{_toml_str(a)}"' for a in mode.approve_for)
             lines.append(f"approve_for = [{af}]")
         lines.append("")
 
         if mode.prompt:
             lines.append(f"[modes.{mode_name}.prompt]")
-            lines.append(f'base = """{mode.prompt.base}"""')
-            lines.append(f'user_persona = """{mode.prompt.user_persona}"""')
-            lines.append(f'communication_rules = """{mode.prompt.communication_rules}"""')
+            lines.append(f'base = """{_toml_multiline(mode.prompt.base)}"""')
+            lines.append(f'user_persona = """{_toml_multiline(mode.prompt.user_persona)}"""')
+            lines.append(
+                f'communication_rules = """{_toml_multiline(mode.prompt.communication_rules)}"""'
+            )
             lines.append("")
 
     # Preview
@@ -169,9 +247,24 @@ def _render_config(config) -> list[str]:
     lines.append(f"port_end = {pv.port_end}")
     lines.append(f"startup_timeout = {pv.startup_timeout}")
     if pv.command:
-        lines.append(f'command = "{pv.command}"')
+        lines.append(f'command = "{_toml_str(pv.command)}"')
     if pv.base_url:
-        lines.append(f'base_url = "{pv.base_url}"')
+        lines.append(f'base_url = "{_toml_str(pv.base_url)}"')
+    lines.append("")
+
+    # Verify (quality gate)
+    v = config.verify
+    lines.append("[verify]")
+    lines.append(f"enabled = {str(v.enabled).lower()}")
+    lines.append(f"max_retry = {v.max_retry}")
+    if v.test_command:
+        lines.append(f'test_command = "{_toml_str(v.test_command)}"')
+    if v.health_url:
+        lines.append(f'health_url = "{_toml_str(v.health_url)}"')
+    lines.append(f"semantic_enabled = {str(v.semantic_enabled).lower()}")
+    if v.semantic_assert_text:
+        asserts = ", ".join(f'"{_toml_str(a)}"' for a in v.semantic_assert_text)
+        lines.append(f"semantic_assert_text = [{asserts}]")
     lines.append("")
 
     # Error translations
@@ -182,7 +275,7 @@ def _render_config(config) -> list[str]:
             if err_map:
                 lines.append(f"[errors.{err_name}]")
                 for k, v in err_map.items():
-                    lines.append(f'"{k}" = "{v}"')
+                    lines.append(f'"{_toml_str(k)}" = "{_toml_str(v)}"')
                 lines.append("")
 
     return lines
@@ -193,15 +286,18 @@ def _print_help():
     print()
     print("用法:")
     print("  live-edit init   [目录]  生成 .live-edit.toml 配置文件")
+    print("  live-edit intake [目录]  自动生成配置（探测+extra_context+verify+冒烟测试+验证）")
     print("  live-edit check  [路径]  验证配置文件")
     print()
     print("选项:")
-    print("  --force                 强制覆盖已有配置（init）")
+    print("  --force                 强制覆盖已有配置（init / intake）")
+    print("  --dry-run               预演，不写文件（intake）")
+    print("  --yes                   跳过冒烟测试确认（intake）")
     print("  --help, -h              显示此帮助信息")
 
 
 def main():
-    """CLI entry point: live-edit [init|check]."""
+    """CLI entry point: live-edit [init|intake|check]."""
     if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
         _print_help()
         sys.exit(0)
@@ -216,6 +312,15 @@ def main():
         ok = cmd_init(root=root, force=force)
         sys.exit(0 if ok else 1)
 
+    elif cmd == "intake":
+        dry_run = "--dry-run" in args
+        force = "--force" in args
+        auto_yes = "--yes" in args
+        path_args = [a for a in args if a not in ("--dry-run", "--force", "--yes")]
+        root = path_args[0] if path_args else "."
+        ok = cmd_intake(root=root, dry_run=dry_run, force=force, auto_yes=auto_yes)
+        sys.exit(0 if ok else 1)
+
     elif cmd == "check":
         path = args[0] if args else ".live-edit.toml"
         ok = cmd_check(path)
@@ -223,7 +328,7 @@ def main():
 
     else:
         print(f"未知命令: {cmd}")
-        print("可用命令: init, check")
+        print("可用命令: init, intake, check")
         sys.exit(1)
 
 

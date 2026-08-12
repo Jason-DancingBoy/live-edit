@@ -249,9 +249,7 @@ class TestCreateWorktreeFork:
         # Commit A (the future fork base), then commit B on main past it
         (git_repo / "a.txt").write_text("a")
         subprocess.run(["git", "add", "."], cwd=str(git_repo), capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "base"], cwd=str(git_repo), capture_output=True
-        )
+        subprocess.run(["git", "commit", "-m", "base"], cwd=str(git_repo), capture_output=True)
         base_hash = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=str(git_repo),
@@ -260,9 +258,7 @@ class TestCreateWorktreeFork:
         ).stdout.strip()
         (git_repo / "b.txt").write_text("b")
         subprocess.run(["git", "add", "."], cwd=str(git_repo), capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "advance"], cwd=str(git_repo), capture_output=True
-        )
+        subprocess.run(["git", "commit", "-m", "advance"], cwd=str(git_repo), capture_output=True)
 
         wt_path = vcs.create_worktree("sess-fork", base_ref=base_hash)
 

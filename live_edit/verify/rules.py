@@ -1,5 +1,6 @@
 # live_edit/verify/rules.py
 """Decision evaluation for verify-then-approve."""
+
 from __future__ import annotations
 
 from enum import Enum

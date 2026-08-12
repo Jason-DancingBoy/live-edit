@@ -1,5 +1,6 @@
 # live_edit/verify/layers.py
 """Three verification layers: deterministic, diff safety, semantic."""
+
 from __future__ import annotations
 
 import asyncio

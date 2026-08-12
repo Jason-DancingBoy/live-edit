@@ -1855,9 +1855,7 @@ def test_edit_session_defaults_fork_fields():
 class TestSessionForkEngine:
     @pytest.mark.asyncio
     async def test_run_edit_session_passes_base_ref_to_worktree(self):
-        provider = FakeProvider(
-            [[{"type": "text", "text": "ok"}]]
-        )
+        provider = FakeProvider([[{"type": "text", "text": "ok"}]])
         mock_vcs = MagicMock()
         mock_storage = MagicMock()
         mock_storage.save_session = MagicMock()
