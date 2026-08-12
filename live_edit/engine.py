@@ -16,6 +16,8 @@ from .provider import Provider
 from .storage import Storage
 from .tools import _summarize_thinking, _tool_summary
 from .vcs import VCS, session_worktree_path
+from .verify import Decision as _VerifyDecision
+from .verify.runner import verify_change as _verify_change
 
 logger = logging.getLogger("live-edit.engine")
 
@@ -480,6 +482,37 @@ async def _build_system_prompt(config: Config, mode: str) -> str:
     if extra:
         parts.append(extra)
     return "\n\n".join(p for p in parts if p)
+
+
+async def _verify_and_store(session, storage, config):
+    """Run verify-then-approve for a finished session; store evidence. Returns Evidence or None."""
+    verify_cfg = getattr(config, "verify", None)
+    if verify_cfg is None or not verify_cfg.enabled:
+        return None
+    prior = 0
+    if storage is not None:
+        try:
+            stored = storage.get_evidence(session.id)
+            if stored:
+                prior = json.loads(stored).get("verify_attempts", 0)
+        except Exception:  # noqa: BLE001 — 读取历史证据失败不阻断
+            prior = 0
+    evidence = await _verify_change(
+        worktree=session._worktree_path,
+        modified_files=session._modified_files,
+        config=config,
+        session_id=session.id,
+        previous_attempts=prior,
+    )
+    if storage is not None:
+        storage.save_evidence(session.id, json.dumps(evidence.to_dict(), ensure_ascii=False))
+    return evidence
+
+
+def _verify_auto_approves(evidence) -> bool:
+    return (
+        evidence is not None and getattr(evidence, "decision", "") == _VerifyDecision.AUTO_APPROVE
+    )
 
 
 async def _do_commit(session: EditSession, vcs: VCS, storage: Storage, config=None, audit_log=None):
@@ -1215,19 +1248,30 @@ async def run_edit_session(
                 session.emit("error", error=f"生成 diff 失败: {e}")
                 return
 
+            evidence = await _verify_and_store(session, storage, config)
+            auto_approved = _verify_auto_approves(evidence)
+
             if mode == "deep":
                 await _do_commit(session, vcs, storage, config, audit_log=audit_log)
+                if evidence is not None and session._commit_hash:
+                    evidence.commit_hash = session._commit_hash
+                    if storage is not None:
+                        storage.save_evidence(
+                            session.id, json.dumps(evidence.to_dict(), ensure_ascii=False)
+                        )
                 session._outcome = "completed" if session._committed else "failed"
             else:
-                final = await session.wait_for_approval(
-                    "__final__",
-                    {
-                        "tool": "final_commit",
-                        "files": session._modified_files,
-                        "summary": diff_stat,
-                    },
-                    timeout=600.0,
-                )
+                tool_data = {
+                    "tool": "final_commit",
+                    "files": session._modified_files,
+                    "summary": diff_stat,
+                }
+                if evidence is not None:
+                    tool_data["evidence"] = evidence.to_dict()
+                if auto_approved:
+                    final = {"approved": True, "auto": True, "reason": evidence.reason}
+                else:
+                    final = await session.wait_for_approval("__final__", tool_data, timeout=600.0)
 
                 if final.get("approved"):
                     await _do_commit(session, vcs, storage, config, audit_log=audit_log)
