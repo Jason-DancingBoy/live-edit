@@ -1,6 +1,11 @@
 """Tests for live_edit.cli — live-edit init, intake, and check commands."""
 
-import tomllib
+import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 
 class TestCliInit:
