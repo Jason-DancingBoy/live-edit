@@ -42,4 +42,11 @@ def evaluate(evidence: Evidence, config) -> tuple[Decision, str]:
     if det.get("status") == CheckStatus.SKIPPED:
         return (Decision.HUMAN, "未配置实际验证，降级人工")
 
+    # 方案 A 契约：只有显式配置的 verify 测试命令（test_command）检查通过才允许
+    # AUTO_APPROVE。仅配 health_url 时 deterministic 层因 health pass 是 "pass"，
+    # 但 test_command 仍是 skipped —— 没有实际测试验证，不得自动放行。
+    tc = next((c for c in det.get("checks", []) if c.get("id") == "test_command"), None)
+    if tc is None or tc.get("status") != CheckStatus.PASS:
+        return (Decision.HUMAN, "未配置实际验证，降级人工")
+
     return (Decision.AUTO_APPROVE, "低风险自动放行")

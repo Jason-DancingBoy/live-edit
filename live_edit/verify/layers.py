@@ -87,11 +87,16 @@ async def check_diff_safety(
     files_touched = sorted(set(modified_files))
     out_of_scope = [f for f in files_touched if _matches_any(f, protected_paths)]
     scan_alerts: list[dict] = []
+    worktree_root = Path(worktree).resolve()
     for f in files_touched:
-        # 绝对路径会逃逸 worktree（Path(worktree) / f 直接拼成外部路径），跳过扫描。
-        if Path(f).is_absolute():
+        # 归一化后若越过 worktree 边界（绝对路径，或 "../secret" 这类相对越界），
+        # 跳过扫描——绝不读取项目目录外的文件。
+        candidate = (worktree_root / f).resolve()
+        try:
+            candidate.relative_to(worktree_root)
+        except ValueError:
             continue
-        scan_alerts.extend(_scan_file_for_secrets(Path(worktree) / f))
+        scan_alerts.extend(_scan_file_for_secrets(candidate))
     status = CheckStatus.FAIL if (out_of_scope or scan_alerts) else CheckStatus.PASS
     return {
         "status": status,

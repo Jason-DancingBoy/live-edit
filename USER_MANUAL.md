@@ -577,10 +577,10 @@ protected_paths = []    # 保护路径（glob），改动命中即 BLOCK
 
 verify **默认不跑测试与健康检查**：`test_command` / `health_url` 留空时，这两项直接 `SKIPPED`，测试与健康检查由 evaluation 质量网统一负责，避免两套测试体系重复。此时确定性层未实际验证，决策**降级 `HUMAN`**——默认配置下改动仍需人工确认，**不会自动放行**。
 
-verify 在默认配置下的核心价值是两道安全闸门：
+verify 的默认防护强度要说明清楚——**密钥扫描默认开启，保护路径需配置后才生效**：
 
-- **保护路径**：命中 `protected_paths` 的改动（如 `.env`、密钥文件）→ `BLOCK` 拦截；
-- **密钥扫描**：改动文件内出现 AWS Key、私钥、内联密钥/密码 → `BLOCK` 拦截。
+- **密钥扫描**（默认开启）：改动文件内出现 AWS Key、私钥、内联密钥/密码 → `BLOCK` 拦截；
+- **保护路径**（默认 `[]`，需配置后生效）：在 `[verify.rules.low_risk]` 配置 `protected_paths` 后，命中该路径的改动（如 `.env`、密钥文件）→ `BLOCK` 拦截。
 
 外加**证据审计**：每次会话的验证结果、决策、理由全部落库，`GET /live-edit/session/{session_id}` 会话详情携带 `evidence` 字段。
 

@@ -591,10 +591,10 @@ protected_paths = []    # protected paths (glob); touching one BLOCKs the change
 
 verify **does not run tests or health checks by default**. When `test_command` / `health_url` are left empty, those checks are `SKIPPED`; testing and health checks are owned by the evaluation quality net, so there is no duplicated test system. Because no deterministic check actually runs, the decision **degrades to `HUMAN`** — under the default configuration the change still requires human approval and is **never auto-approved**.
 
-Under the default configuration, verify's core value is two safety gates:
+The default protection level is worth stating precisely: the **secret scan is on by default, while protected paths only take effect once configured**.
 
-- **Protected paths**: touching a `protected_paths` entry (e.g. `.env`, key files) → `BLOCK`;
-- **Secret scan**: a changed file containing an AWS key, a private key, or an inline secret/password → `BLOCK`.
+- **Secret scan** (on by default): a changed file containing an AWS key, a private key, or an inline secret/password → `BLOCK`;
+- **Protected paths** (default `[]`, effective after configuration): after setting `protected_paths` in `[verify.rules.low_risk]`, touching a matching path (e.g. `.env`, key files) → `BLOCK`.
 
 Plus **evidence audit**: each session's verification results, decision, and reason are persisted, and `GET /live-edit/session/{session_id}` includes the `evidence` field in the session detail.
 

@@ -545,9 +545,13 @@ def setup_live_edit(
         if detail is None:
             raise HTTPException(status_code=404, detail="会话不存在")
         evidence_json = storage.get_evidence(session_id) if storage else None
-        detail["evidence"] = (
-            json.loads(evidence_json) if evidence_json and isinstance(evidence_json, str) else None
-        )
+        evidence = None
+        if evidence_json and isinstance(evidence_json, str):
+            try:
+                evidence = json.loads(evidence_json)
+            except Exception:  # noqa: BLE001 — 损坏/非 JSON 证据视为无证据，不 500
+                evidence = None
+        detail["evidence"] = evidence
         return detail
 
     # ── POST /live-edit/revert/{commit_hash}/preview ──
@@ -1069,7 +1073,14 @@ def setup_live_edit(
             except Exception:
                 # 损坏/非 JSON 证据视为无证据，走正常合并路径，不让合并端 500。
                 decision = None
-        if decision == "block" and not (req and req.reason):
+        if decision == "block" and not (req and req.reason and req.reason.strip()):
+            # 纯空白 reason 不构成强制放行理由；记审计后拒绝，不让合并端静默成功。
+            audit_log.record(
+                "admin_merge_blocked",
+                target=session_id,
+                result="blocked",
+                detail={"reason": (req.reason if req else "") or ""},
+            )
             return JSONResponse(
                 status_code=400,
                 content={

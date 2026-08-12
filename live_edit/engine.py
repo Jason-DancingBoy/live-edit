@@ -485,27 +485,40 @@ async def _build_system_prompt(config: Config, mode: str) -> str:
 
 
 async def _verify_and_store(session, storage, config):
-    """Run verify-then-approve for a finished session; store evidence. Returns Evidence or None."""
+    """Run verify-then-approve for a finished session; store evidence. Returns Evidence or None.
+
+    verify 失败或证据落库失败时返回 None（降级人工审批），绝不把异常抛到
+    run_edit_session 外层把会话标 failed、丢弃工作树。
+    """
     verify_cfg = getattr(config, "verify", None)
     if verify_cfg is None or not verify_cfg.enabled:
         return None
+    # live-edit 的 engine 没有 verify 重试循环：verify 在每轮会话结束只跑一次
+    # （包括 continue），previous_attempts 恒为 0、verify_attempts 恒为 1。
+    # 若沿用读历史 evidence 的 verify_attempts 累计，一个干净的 4 轮对话
+    # （max_retry=3）会在第 4 轮被"累计重试超限"误 BLOCK——engine 并无重试
+    # 语义，不应累计。runner 的 previous_attempts + 1 契约保留不变。
     prior = 0
+    try:
+        evidence = await _verify_change(
+            worktree=session._worktree_path,
+            modified_files=session._modified_files,
+            config=config,
+            session_id=session.id,
+            previous_attempts=prior,
+        )
+    except Exception:  # noqa: BLE001 — verify 失败不摧毁会话，降级人工
+        logger.warning("Verify failed for session %s, degrading to human approval", session.id)
+        return None
     if storage is not None:
         try:
-            stored = storage.get_evidence(session.id)
-            if stored:
-                prior = json.loads(stored).get("verify_attempts", 0)
-        except Exception:  # noqa: BLE001 — 读取历史证据失败不阻断
-            prior = 0
-    evidence = await _verify_change(
-        worktree=session._worktree_path,
-        modified_files=session._modified_files,
-        config=config,
-        session_id=session.id,
-        previous_attempts=prior,
-    )
-    if storage is not None:
-        storage.save_evidence(session.id, json.dumps(evidence.to_dict(), ensure_ascii=False))
+            storage.save_evidence(session.id, json.dumps(evidence.to_dict(), ensure_ascii=False))
+        except Exception:  # noqa: BLE001 — 落库失败不摧毁会话，降级人工
+            logger.warning(
+                "Failed to store evidence for session %s, degrading to human approval",
+                session.id,
+            )
+            return None
     return evidence
 
 

@@ -70,9 +70,44 @@ def test_skipped_det_degrades_human():
 
 def test_clean_with_verify_test_auto_approves():
     cfg = VerifyConfig(test_command="pytest -q")
-    ev = _ev(layers={"deterministic": {"status": "pass"}, "diff_safety": {"status": "pass", "files_touched": ["a.py"]}})
+    ev = _ev(
+        layers={
+            "deterministic": {
+                "status": "pass",
+                "checks": [
+                    {"id": "test_command", "status": "pass", "detail": {}},
+                    {"id": "health_check", "status": "skipped", "detail": {}},
+                ],
+            },
+            "diff_safety": {"status": "pass", "files_touched": ["a.py"]},
+        }
+    )
     d, reason = evaluate(ev, cfg)
     assert d == Decision.AUTO_APPROVE
+
+
+def test_health_only_does_not_auto_approve():
+    """方案 A 契约：只配 health_url（test_command skipped）→ HUMAN，绝不自动放行。
+
+    deterministic 层因 health pass 整体是 "pass"，旧逻辑会漏过 skipped-det 规则
+    走到 AUTO_APPROVE；test_command 闸门必须单独拦下 health-only 配置。
+    """
+    cfg = VerifyConfig(health_url="http://127.0.0.1:1")
+    ev = _ev(
+        layers={
+            "deterministic": {
+                "status": "pass",
+                "checks": [
+                    {"id": "test_command", "status": "skipped", "detail": {}},
+                    {"id": "health_check", "status": "pass", "detail": {"status_code": 200}},
+                ],
+            },
+            "diff_safety": {"status": "pass", "files_touched": ["a.py"]},
+        }
+    )
+    d, reason = evaluate(ev, cfg)
+    assert d == Decision.HUMAN
+    assert "降级" in reason
 
 
 def test_semantic_fail_blocks():

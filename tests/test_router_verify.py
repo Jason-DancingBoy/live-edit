@@ -94,6 +94,24 @@ def test_merge_blocked_requires_reason(tmp_path):
     assert r.json().get("blocked") is True
 
 
+def test_merge_blocked_whitespace_reason_still_blocked_and_audited(tmp_path):
+    """纯空白 reason 不构成强制放行理由：仍 400，且留下 admin_merge_blocked 审计。"""
+    audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
+    app, storage = _make_app(tmp_path, vcs=MagicMock(), audit_log=audit)
+    _store_evidence(storage, "s1", "block")
+    r = TestClient(app).post(
+        "/live-edit/admin/branches/s1/merge",
+        headers={"X-Admin-Key": "k"},
+        json={"reason": "   "},
+    )
+    assert r.status_code == 400
+    assert r.json().get("blocked") is True
+    blocked = audit.query(action="admin_merge_blocked")
+    assert len(blocked) == 1
+    assert blocked[0].result == "blocked"
+    assert blocked[0].detail == {"reason": "   "}
+
+
 def test_merge_blocked_with_reason_overrides(tmp_path):
     audit = SQLiteAuditLog(str(tmp_path / "audit.db"))
     vcs = _make_git_repo(tmp_path, "s1")
@@ -143,3 +161,21 @@ def test_session_detail_includes_evidence(tmp_path):
     r = TestClient(app).get("/live-edit/session/s1")
     assert r.status_code == 200
     assert r.json().get("evidence", {}).get("decision") == "auto_approve"
+
+
+def test_session_detail_corrupted_evidence_does_not_500(tmp_path):
+    """损坏的 evidence 字符串不应让会话详情端 500，按无证据处理。"""
+    app, storage = _make_app(tmp_path, vcs=MagicMock())
+    storage.save_session(
+        session_id="s1",
+        request="改按钮",
+        committed=0,
+        files=["app.py"],
+        commit_hash="",
+        messages_json="[]",
+        mode="quick",
+    )
+    storage.save_evidence("s1", "{not valid json")
+    r = TestClient(app).get("/live-edit/session/s1")
+    assert r.status_code == 200
+    assert r.json().get("evidence") is None

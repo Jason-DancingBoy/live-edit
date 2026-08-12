@@ -103,12 +103,33 @@ async def test_diff_safety_clean(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_diff_safety_skips_absolute_path(tmp_path):
-    (tmp_path / "app.py").write_text("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
-    r = await check_diff_safety(str(tmp_path), [str(tmp_path / "app.py")], [])
-    # 绝对路径逃逸 worktree，跳过扫描 → 不误报
+async def test_diff_safety_skips_absolute_path_outside_worktree(tmp_path):
+    outside = tmp_path.parent / "outside_app.py"
+    outside.write_text("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
+    r = await check_diff_safety(str(tmp_path), [str(outside)], [])
+    # 绝对路径越出 worktree，跳过扫描 → 不误报
     assert r["status"] == "pass"
     assert r["scan_alerts"] == []
+
+
+@pytest.mark.asyncio
+async def test_diff_safety_scans_absolute_path_inside_worktree(tmp_path):
+    # 绝对路径归一化后仍在 worktree 内 → 照常扫描，能抓到密钥。
+    (tmp_path / "app.py").write_text("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
+    r = await check_diff_safety(str(tmp_path), [str(tmp_path / "app.py")], [])
+    assert r["status"] == "fail"
+    assert len(r["scan_alerts"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_diff_safety_skips_traversal_outside_worktree(tmp_path):
+    """../secret 相对越界会指向 worktree 外的文件，必须跳过扫描，绝不读取外部内容。"""
+    outside = tmp_path / "secret.env"
+    outside.write_text("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
+    r = await check_diff_safety(str(tmp_path / "wt"), ["../secret.env"], [])
+    assert r["status"] == "pass"
+    assert r["scan_alerts"] == []
+    assert r["files_touched"] == ["../secret.env"]
 
 
 @pytest.mark.asyncio
