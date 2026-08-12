@@ -116,6 +116,29 @@ class ObservabilityConfig:
 
 
 @dataclass
+class VerifyRuleConfig:
+    max_files: int = 10
+    protected_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
+class VerifyConfig:
+    enabled: bool = True
+    max_retry: int = 3
+    test_command: str = ""
+    health_url: str = ""
+    semantic_enabled: bool = False
+    semantic_assert_text: list[str] = field(default_factory=list)
+    rules: VerifyRuleConfig = field(default_factory=VerifyRuleConfig)
+
+    def __post_init__(self):
+        if self.max_retry < 0:
+            raise ValueError(f"max_retry must be >= 0, got {self.max_retry}")
+        if self.rules.max_files < 0:
+            raise ValueError(f"max_files must be >= 0, got {self.rules.max_files}")
+
+
+@dataclass
 class EmbedderConfig:
     type: str = "local"
     model: str = "thenlper/gte-small"
@@ -234,6 +257,7 @@ class Config:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
     toml_tools: list[dict] = field(default_factory=list)
 
     @property
@@ -373,6 +397,21 @@ def parse_config(path: str) -> Config:
 
     observability = _parse_observability(raw.get("observability", {}))
 
+    verify_data = raw.get("verify", {})
+    rules_data = verify_data.get("rules", {}).get("low_risk", {})
+    verify = VerifyConfig(
+        enabled=verify_data.get("enabled", True),
+        max_retry=verify_data.get("max_retry", 3),
+        test_command=verify_data.get("test_command", ""),
+        health_url=verify_data.get("health_url", ""),
+        semantic_enabled=verify_data.get("semantic_enabled", False),
+        semantic_assert_text=verify_data.get("semantic_assert_text", []),
+        rules=VerifyRuleConfig(
+            max_files=rules_data.get("max_files", 10),
+            protected_paths=rules_data.get("protected_paths", []),
+        ),
+    )
+
     # Parse [memory] section (new) with [session_memory] fallback
     mem_data = raw.get("memory", {})
 
@@ -475,6 +514,7 @@ def parse_config(path: str) -> Config:
         evaluation=evaluation,
         memory=memory,
         observability=observability,
+        verify=verify,
         toml_tools=toml_tools,
     )
 
