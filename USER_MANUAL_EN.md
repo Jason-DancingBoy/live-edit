@@ -251,6 +251,18 @@ base = "You are a code analysis expert for my-app."
 user_persona = "Learners who want to understand code."
 communication_rules = "Use clear code references (file path + line numbers). Explain both what and why. Read-only tools only."
 
+[verify]
+enabled = true
+max_retry = 3
+test_command = ""          # leave empty: tests are owned by the evaluation quality net (Option A dedup)
+health_url = ""            # leave empty: health checks are owned by the evaluation quality net
+semantic_enabled = false   # semantic layer is opt-in, off by default
+semantic_assert_text = []
+
+[verify.rules.low_risk]
+max_files = 10
+protected_paths = [".env", "*.pem", "id_rsa*", "credentials*.json"]
+
 [errors.quick]
 "old_string not found in file" = "The file content has changed — the agent will re-read and adjust."
 "path traversal detected" = "Operation blocked (attempted to access files outside the project)."
@@ -298,6 +310,14 @@ communication_rules = "Use clear code references (file path + line numbers). Exp
 | `[modes.<name>.prompt]` | `base` | str | System prompt body |
 | | `user_persona` | str | Description of the target user |
 | | `communication_rules` | str | Interaction style rules |
+| `[verify]` | `enabled` | bool | Run verification at session end, default `true` |
+| | `max_retry` | int | Cumulative verification attempts cap per session; exceeding it BLOCKs, default `3` |
+| | `test_command` | str | Test command to run. Leave empty: tests are owned by the evaluation quality net (Option A dedup) |
+| | `health_url` | str | Health check URL. Leave empty: health checks are owned by the evaluation quality net |
+| | `semantic_enabled` | bool | Semantic layer on/off (asserts text in the preview page), default `false` (opt-in) |
+| | `semantic_assert_text` | list | Semantic assertion texts; all must be present in the preview page for PASS |
+| `[verify.rules.low_risk]` | `max_files` | int | Max files touched for a low-risk release; exceeding it degrades to HUMAN, default `10` |
+| | `protected_paths` | list | Protected paths (glob); touching one BLOCKs the change |
 | `[errors.<mode>]` | — | dict | Error message translation table |
 
 ---
@@ -542,3 +562,79 @@ Set `extra_context` in `[project]`. Its content is injected into the system prom
 
 **Q: How does revert work?**
 Two-phase `git revert`: preview checks for conflicts first, then execute applies the revert. Supports `post_revert` hooks (e.g. to restart a service).
+
+---
+
+## 13. Verify-then-Approve
+
+At session end, after a diff is produced, live-edit runs an automatic verification pass over the change and stores a piece of **evidence** in the `session_evidence` table. The evidence drives a decision: `AUTO_APPROVE`, `HUMAN`, or `BLOCK`. Blocked or incompletely-verified changes are never merged silently.
+
+### 13.1 Configuration
+
+The `[verify]` section controls verification. Every field is optional:
+
+```toml
+[verify]
+enabled = true          # run verification at session end
+max_retry = 3           # cumulative attempts cap per session; exceeding it BLOCKs
+test_command = ""       # leave empty: tests are owned by the evaluation quality net (see 13.2)
+health_url = ""         # leave empty: health checks are owned by the evaluation quality net
+semantic_enabled = false  # semantic layer is opt-in, off by default
+semantic_assert_text = [] # semantic assertion texts; preview page must contain all
+
+[verify.rules.low_risk]
+max_files = 10          # max files touched for low-risk release; beyond this degrades to HUMAN
+protected_paths = []    # protected paths (glob); touching one BLOCKs the change
+```
+
+### 13.2 Option A dedup: verify does not re-run tests
+
+verify **does not run tests or health checks by default**. When `test_command` / `health_url` are left empty, those checks are `SKIPPED`; testing and health checks are owned by the evaluation quality net, so there is no duplicated test system. Because no deterministic check actually runs, the decision **degrades to `HUMAN`** — under the default configuration the change still requires human approval and is **never auto-approved**.
+
+Under the default configuration, verify's core value is two safety gates:
+
+- **Protected paths**: touching a `protected_paths` entry (e.g. `.env`, key files) → `BLOCK`;
+- **Secret scan**: a changed file containing an AWS key, a private key, or an inline secret/password → `BLOCK`.
+
+Plus **evidence audit**: each session's verification results, decision, and reason are persisted, and `GET /live-edit/session/{session_id}` includes the `evidence` field in the session detail.
+
+Only when a verify test command is **explicitly configured** (`test_command`) and all checks pass on a low-risk change does the decision become `AUTO_APPROVE`.
+
+### 13.3 Flow
+
+- **Session end**: after the diff is generated, run verify → produce evidence (with decision) → store it in `session_evidence`.
+- **quick mode**: only when a verify test is configured and the decision is `AUTO_APPROVE` is the final confirmation skipped and the change committed automatically; otherwise the normal final approval is awaited.
+- **Admin merge gate** (`POST /live-edit/admin/branches/{session_id}/merge`): before merging, the session's stored evidence is read —
+  - `BLOCK`: the merge is rejected unless a `reason` override is provided;
+  - `AUTO_APPROVE` / `HUMAN`: normal merge path.
+
+### 13.4 Sample evidence JSON
+
+```json
+{
+  "session_id": "le_1a2b3c4d",
+  "commit_hash": "9f8e7d6c",
+  "layers": {
+    "deterministic": {
+      "status": "skipped",
+      "checks": [
+        {"id": "test_command", "status": "skipped", "detail": {"command": ""}},
+        {"id": "health_check", "status": "skipped", "detail": {"url": ""}}
+      ]
+    },
+    "diff_safety": {
+      "status": "pass",
+      "files_touched": ["src/app.py"],
+      "out_of_scope": [],
+      "scan_alerts": []
+    },
+    "semantic": {"status": "skipped", "detail": {}}
+  },
+  "verify_attempts": 1,
+  "decision": "human",
+  "reason": "no real verification configured, degraded to human",
+  "overall": "pass"
+}
+```
+
+Note: `decision` is one of `auto_approve` / `human` / `block`; `overall` is one of `pass` / `fail` / `unverified`.

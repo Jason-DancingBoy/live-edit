@@ -240,6 +240,18 @@ base = "你是 my-app 的代码分析专家。"
 user_persona = "想要理解代码的学习者。"
 communication_rules = "用中文交流，清晰的代码引用。只能使用只读工具。"
 
+[verify]
+enabled = true
+max_retry = 3
+test_command = ""          # 默认留空：测试由 evaluation 质量网负责（方案 A 去重）
+health_url = ""            # 默认留空：健康检查由 evaluation 质量网负责
+semantic_enabled = false   # 语义层默认关闭（opt-in）
+semantic_assert_text = []
+
+[verify.rules.low_risk]
+max_files = 10
+protected_paths = [".env", "*.pem", "id_rsa*", "credentials*.json"]
+
 [errors.quick]
 "old_string 在文件中未找到" = "AI 发现文件内容已变化，会重新读取后调整"
 "路径越界" = "操作已自动阻止（访问了项目外的文件）"
@@ -279,6 +291,14 @@ communication_rules = "用中文交流，清晰的代码引用。只能使用只
 | `[modes.<name>.prompt]` | `base` | str | 系统提示词主体 |
 | | `user_persona` | str | 用户画像描述 |
 | | `communication_rules` | str | 交互规则 |
+| `[verify]` | `enabled` | bool | 会话末尾是否运行验证，默认 `true` |
+| | `max_retry` | int | 单会话累计验证次数上限，超过则 BLOCK，默认 `3` |
+| | `test_command` | str | 验证用测试命令；默认留空 = 测试由 evaluation 质量网负责（方案 A 去重） |
+| | `health_url` | str | 健康检查 URL；默认留空 = 健康检查由 evaluation 质量网负责 |
+| | `semantic_enabled` | bool | 语义层开关（抓取 preview 页面做文本断言），默认 `false`（opt-in） |
+| | `semantic_assert_text` | list | 语义断言文本，preview 页面必须全部包含才 PASS |
+| `[verify.rules.low_risk]` | `max_files` | int | 低风险放行的最大改动文件数，超过降级 HUMAN，默认 `10` |
+| | `protected_paths` | list | 保护路径（glob），改动命中即 BLOCK |
 | `[errors.<mode>]` | — | dict | 错误消息翻译表 |
 
 ---
@@ -528,3 +548,79 @@ from live_edit import (
 
 **Q: 回滚是如何工作的？**
 通过 `git revert` 实现，先 preview 检查冲突，再 execute 执行。支持 `post_revert` 钩子。
+
+---
+
+## 13. 验证即审批（Verify-then-Approve）
+
+会话结束、生成 diff 后，live-edit 会对本次改动跑一轮自动验证，产出一份**证据（Evidence）**存入 `session_evidence` 表，并按证据给出决策：`AUTO_APPROVE`（自动放行）/ `HUMAN`（人工审批）/ `BLOCK`（阻断）。验证被阻断或证据不全的改动不会悄悄合并。
+
+### 13.1 配置段
+
+`[verify]` 段控制验证行为，全部字段可选：
+
+```toml
+[verify]
+enabled = true          # 会话末尾是否运行验证
+max_retry = 3           # 单会话累计验证次数上限，超过则 BLOCK
+test_command = ""       # 默认留空：测试由 evaluation 质量网负责（见 13.2）
+health_url = ""         # 默认留空：健康检查由 evaluation 质量网负责
+semantic_enabled = false  # 语义层默认关闭（opt-in）
+semantic_assert_text = [] # 语义断言文本，preview 页面须全部包含
+
+[verify.rules.low_risk]
+max_files = 10          # 低风险放行的最大改动文件数，超过降级 HUMAN
+protected_paths = []    # 保护路径（glob），改动命中即 BLOCK
+```
+
+### 13.2 方案 A 去重：verify 不重复测试
+
+verify **默认不跑测试与健康检查**：`test_command` / `health_url` 留空时，这两项直接 `SKIPPED`，测试与健康检查由 evaluation 质量网统一负责，避免两套测试体系重复。此时确定性层未实际验证，决策**降级 `HUMAN`**——默认配置下改动仍需人工确认，**不会自动放行**。
+
+verify 在默认配置下的核心价值是两道安全闸门：
+
+- **保护路径**：命中 `protected_paths` 的改动（如 `.env`、密钥文件）→ `BLOCK` 拦截；
+- **密钥扫描**：改动文件内出现 AWS Key、私钥、内联密钥/密码 → `BLOCK` 拦截。
+
+外加**证据审计**：每次会话的验证结果、决策、理由全部落库，`GET /live-edit/session/{session_id}` 会话详情携带 `evidence` 字段。
+
+只有**显式配置** verify 测试命令（`test_command`）且验证全绿、改动低风险时，才走 `AUTO_APPROVE`。
+
+### 13.3 流程
+
+- **会话末尾**：生成 diff 后运行 verify → 产出证据（含决策）→ 存入 `session_evidence`。
+- **quick 模式**：仅当配置了 verify 测试且决策为 `AUTO_APPROVE` 时，跳过最终确认自动提交；否则照常等待最终审批。
+- **admin 合并门**（`POST /live-edit/admin/branches/{session_id}/merge`）：合并前读取该会话证据——
+  - `BLOCK`：拒绝合并，必须提供 `reason` 强制放行；
+  - `AUTO_APPROVE` / `HUMAN`：走正常合并路径。
+
+### 13.4 证据 JSON 示例
+
+```json
+{
+  "session_id": "le_1a2b3c4d",
+  "commit_hash": "9f8e7d6c",
+  "layers": {
+    "deterministic": {
+      "status": "skipped",
+      "checks": [
+        {"id": "test_command", "status": "skipped", "detail": {"command": ""}},
+        {"id": "health_check", "status": "skipped", "detail": {"url": ""}}
+      ]
+    },
+    "diff_safety": {
+      "status": "pass",
+      "files_touched": ["src/app.py"],
+      "out_of_scope": [],
+      "scan_alerts": []
+    },
+    "semantic": {"status": "skipped", "detail": {}}
+  },
+  "verify_attempts": 1,
+  "decision": "human",
+  "reason": "未配置实际验证，降级人工",
+  "overall": "pass"
+}
+```
+
+注：`decision` 取值为 `auto_approve` / `human` / `block`；`overall` 为 `pass` / `fail` / `unverified`。
