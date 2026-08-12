@@ -544,6 +544,10 @@ def setup_live_edit(
         detail = storage.get_session_detail(session_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="会话不存在")
+        evidence_json = storage.get_evidence(session_id) if storage else None
+        detail["evidence"] = (
+            json.loads(evidence_json) if evidence_json and isinstance(evidence_json, str) else None
+        )
         return detail
 
     # ── POST /live-edit/revert/{commit_hash}/preview ──
@@ -1033,9 +1037,14 @@ def setup_live_edit(
             logger.error("admin_list_branches error: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+    class MergeRequest(BaseModel):
+        reason: str = ""
+
     @router.post("/admin/branches/{session_id}/merge")
     async def admin_merge_branch(
-        session_id: str, x_admin_key: str = Header("", alias="X-Admin-Key")
+        session_id: str,
+        x_admin_key: str = Header("", alias="X-Admin-Key"),
+        req: MergeRequest | None = None,
     ):
         """Merge live-edit/<session_id> into main. Requires X-Admin-Key.
 
@@ -1048,6 +1057,26 @@ def setup_live_edit(
             )
             raise HTTPException(status_code=403, detail="需要有效的 admin key")
         branch = f"live-edit/{session_id}"
+        # Verify-then-approve gate: read stored evidence; BLOCK without a
+        # reason override stops the merge.
+        evidence_json = storage.get_evidence(session_id) if storage else None
+        decision = None
+        if evidence_json and isinstance(evidence_json, str):
+            from .verify.evidence import Evidence
+
+            try:
+                decision = Evidence.from_dict(json.loads(evidence_json)).decision
+            except Exception:
+                # 损坏/非 JSON 证据视为无证据，走正常合并路径，不让合并端 500。
+                decision = None
+        if decision == "block" and not (req and req.reason):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "该改动被验证阻断，需提供 reason 强制放行",
+                    "blocked": True,
+                },
+            )
         try:
             # Verify branch exists
             import subprocess as _sp
@@ -1071,14 +1100,24 @@ def setup_live_edit(
 
             msg = f"live-edit: merge {branch}"
             merge_hash = vcs.merge_commit(tip, msg)
-            audit_log.record("admin_merge", target=session_id, result="ok")
+            if decision == "block":
+                audit_log.record(
+                    "admin_merge_override",
+                    target=session_id,
+                    result="ok",
+                    detail={"reason": (req.reason if req else "") or ""},
+                )
+                merge_result = "override"
+            else:
+                merge_result = "auto_approve" if decision == "auto_approve" else "ok"
+            audit_log.record("admin_merge", target=session_id, result=merge_result)
             await preview_manager.stop(session_id)
             # Branch merged — safe to delete
             try:
                 vcs.discard_session_branch(session_id)
             except Exception as _e:
                 logger.warning("post-merge branch delete failed for %s: %s", session_id, _e)
-            return {"ok": True, "commit_hash": merge_hash}
+            return {"ok": True, "commit_hash": merge_hash, "decision": decision}
         except HTTPException:
             raise
         except RuntimeError as e:
