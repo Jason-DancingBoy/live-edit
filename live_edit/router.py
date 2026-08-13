@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 
@@ -102,6 +103,53 @@ def _resolve_api_key(config) -> str:
     return os.environ.get(env_var, "")
 
 
+async def _compute_timeline(project_root: str, vcs, storage, limit: int) -> list[dict]:
+    """Build the timeline entries off the event loop.
+
+    build_timeline and the root-commit prepend run git subprocesses (up to ~10s
+    each); the thread pool keeps them from blocking the event loop.
+    """
+    entries = await asyncio.to_thread(build_timeline, vcs, storage, limit=limit)
+
+    # Prepend root commit for frontend compatibility
+    try:
+        import subprocess
+
+        r = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "rev-list", "--max-parents=0", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=project_root,
+        )
+        root_hash = r.stdout.strip()[:8]
+        info = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "log", "-1", "--format=%s|%ai", root_hash],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=project_root,
+        )
+        parts = info.stdout.strip().split("|", 1)
+        entries.insert(
+            0,
+            {
+                "commit_hash": root_hash,
+                "message": parts[0] if parts else "Initial commit",
+                "date": parts[1] if len(parts) > 1 else "",
+                "is_initial": True,
+                "is_live_edit": False,
+                "session": None,
+            },
+        )
+    except Exception:
+        pass
+
+    return entries
+
+
 def setup_live_edit(
     project_root: str = ".",
     config_path: str = ".live-edit.toml",
@@ -114,6 +162,7 @@ def setup_live_edit(
     audit_log: AuditLog | None = None,
     metrics: Metrics | None = None,
     session_store: SessionStore | None = None,
+    timeline_cache_ttl: float = 3.0,
 ) -> APIRouter:
     """Create and return a FastAPI router with all live-edit endpoints.
 
@@ -501,6 +550,13 @@ def setup_live_edit(
 
     # ── GET /live-edit/timeline ──
 
+    # Timeline is a hot, slowly-changing read path: the frontend polls it on
+    # every agent step, but its content only changes on new commits/sessions
+    # (every tens of seconds). A short TTL turns ~3 git subprocess calls per
+    # poll into one per TTL window; concurrent polls share a single recompute.
+    _timeline_cache: dict[int, tuple[float, list[dict]]] = {}
+    _timeline_inflight: dict[int, asyncio.Task] = {}
+
     @router.get("/timeline")
     async def get_timeline(
         limit: int = Query(default=30, le=100), diff_for: str = Query(default="")
@@ -510,49 +566,29 @@ def setup_live_edit(
         Optional: ?diff_for=<commit_hash> returns git show for that commit.
         """
         if diff_for:
-            result = vcs.show_commit(diff_for)
+            result = await asyncio.to_thread(vcs.show_commit, diff_for)
             return result
-        try:
-            entries = build_timeline(vcs, storage, limit=limit)
 
-            # Prepend root commit for frontend compatibility
-            try:
-                import subprocess
+        now = time.monotonic()
+        cached = _timeline_cache.get(limit)
+        if cached is not None and now < cached[0]:
+            return {"entries": cached[1]}
 
-                r = subprocess.run(
-                    ["git", "rev-list", "--max-parents=0", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    cwd=project_root,
-                )
-                root_hash = r.stdout.strip()[:8]
-                info = subprocess.run(
-                    ["git", "log", "-1", "--format=%s|%ai", root_hash],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    cwd=project_root,
-                )
-                parts = info.stdout.strip().split("|", 1)
-                entries.insert(
-                    0,
-                    {
-                        "commit_hash": root_hash,
-                        "message": parts[0] if parts else "Initial commit",
-                        "date": parts[1] if len(parts) > 1 else "",
-                        "is_initial": True,
-                        "is_live_edit": False,
-                        "session": None,
-                    },
-                )
-            except Exception:
-                pass
-
+        inflight = _timeline_inflight.get(limit)
+        if inflight is not None:
+            entries = await inflight
             return {"entries": entries}
+
+        task = asyncio.create_task(_compute_timeline(project_root, vcs, storage, limit))
+        _timeline_inflight[limit] = task
+        task.add_done_callback(lambda _t: _timeline_inflight.pop(limit, None))
+        try:
+            entries = await task
         except Exception as e:
             logger.error("Timeline error: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
+        _timeline_cache[limit] = (now + timeline_cache_ttl, entries)
+        return {"entries": entries}
 
     # ── GET /live-edit/history
     async def get_history(limit: int = Query(default=20, le=100)):
