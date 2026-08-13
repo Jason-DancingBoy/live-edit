@@ -1,4 +1,4 @@
-"""CLI for live-edit: init, intake, and check commands."""
+"""CLI for live-edit: init, intake, agent-hook, and check commands."""
 
 import os
 import sys
@@ -39,6 +39,49 @@ def cmd_init(root: str = ".", force: bool = False) -> bool:
     print("  2. 设置 LLM API key 环境变量")
     print("  3. 在代码中添加: from live_edit import setup_live_edit")
     print("     app.include_router(setup_live_edit())")
+    return True
+
+
+def cmd_agent_hook(root: str = ".", force: bool = False) -> bool:
+    """Generate .live-edit/AGENTS.md so an AI agent can auto-complete the
+    live-edit integration when the user asks it to.
+
+    Returns True on success, False if the guide already exists (without --force)
+    or the directory does not exist.
+    """
+    root = os.path.abspath(root)
+    if not os.path.isdir(root):
+        print(f"目录不存在: {root}")
+        return False
+
+    from .config import detect_project
+    from .hook import render_agent_hook
+
+    guide_dir = os.path.join(root, ".live-edit")
+    guide_path = os.path.join(guide_dir, "AGENTS.md")
+
+    if os.path.exists(guide_path) and not force:
+        print(f"引导文件已存在: {guide_path}")
+        print("使用 --force 强制覆盖")
+        return False
+
+    project = detect_project(root)
+    content = render_agent_hook(project, root)
+
+    os.makedirs(guide_dir, exist_ok=True)
+    with open(guide_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    print(f"已生成引导文件: {guide_path}")
+    print(f"  项目: {project.get('name', 'unknown')}")
+    print(f"  语言: {project.get('language', 'unknown')}")
+    framework = project.get("framework", "")
+    if framework:
+        print(f"  框架: {framework}")
+    print()
+    print("打开你的 AI agent（Claude Code / Cursor 等），对它说：")
+    print('  "接入 live-edit"')
+    print("agent 会读取 .live-edit/AGENTS.md 并自动完成接入。")
     return True
 
 
@@ -287,17 +330,18 @@ def _print_help():
     print("用法:")
     print("  live-edit init   [目录]  生成 .live-edit.toml 配置文件")
     print("  live-edit intake [目录]  自动生成配置（探测+extra_context+verify+冒烟测试+验证）")
+    print("  live-edit agent-hook [目录]  生成 .live-edit/AGENTS.md（让 agent 自动接入）")
     print("  live-edit check  [路径]  验证配置文件")
     print()
     print("选项:")
-    print("  --force                 强制覆盖已有配置（init / intake）")
+    print("  --force                 强制覆盖已有配置（init / intake / agent-hook）")
     print("  --dry-run               预演，不写文件（intake）")
     print("  --yes                   跳过冒烟测试确认（intake）")
     print("  --help, -h              显示此帮助信息")
 
 
 def main():
-    """CLI entry point: live-edit [init|intake|check]."""
+    """CLI entry point: live-edit [init|intake|agent-hook|check]."""
     if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
         _print_help()
         sys.exit(0)
@@ -321,6 +365,13 @@ def main():
         ok = cmd_intake(root=root, dry_run=dry_run, force=force, auto_yes=auto_yes)
         sys.exit(0 if ok else 1)
 
+    elif cmd == "agent-hook":
+        force = "--force" in args
+        path_args = [a for a in args if a != "--force"]
+        root = path_args[0] if path_args else "."
+        ok = cmd_agent_hook(root=root, force=force)
+        sys.exit(0 if ok else 1)
+
     elif cmd == "check":
         path = args[0] if args else ".live-edit.toml"
         ok = cmd_check(path)
@@ -328,7 +379,7 @@ def main():
 
     else:
         print(f"未知命令: {cmd}")
-        print("可用命令: init, intake, check")
+        print("可用命令: init, intake, agent-hook, check")
         sys.exit(1)
 
 
