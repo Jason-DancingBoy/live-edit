@@ -11,14 +11,14 @@ from live_edit.verify.layers import (
 
 @pytest.mark.asyncio
 async def test_run_test_command_pass(tmp_path):
-    r = await run_test_command(str(tmp_path), "python -c 'print(1)'")
+    r = await run_test_command(str(tmp_path), "python3 -c 'print(1)'")
     assert r["status"] == "pass"
     assert r["detail"]["exit_code"] == 0
 
 
 @pytest.mark.asyncio
 async def test_run_test_command_fail(tmp_path):
-    r = await run_test_command(str(tmp_path), "python -c 'raise SystemExit(1)'")
+    r = await run_test_command(str(tmp_path), "python3 -c 'raise SystemExit(1)'")
     assert r["status"] == "fail"
 
 

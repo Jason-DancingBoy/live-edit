@@ -28,7 +28,7 @@ async def test_default_config_degrades_to_human(tmp_path):
 async def test_clean_change_with_verify_test_auto_approves(tmp_path):
     from live_edit.config import VerifyConfig
 
-    cfg = _cfg(verify=VerifyConfig(test_command="python -c 'pass'"))
+    cfg = _cfg(verify=VerifyConfig(test_command="python3 -c 'pass'"))
     (tmp_path / "app.py").write_text("x = 1\n")
     ev = await verify_change(str(tmp_path), ["app.py"], cfg, session_id="s1")
     assert ev.decision == "auto_approve"

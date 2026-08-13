@@ -140,7 +140,7 @@ async def test_default_verify_degrades_to_human_and_waits(tmp_path):
 async def test_auto_approve_skips_final_wait_and_commits(tmp_path):
     """test_command 全绿 → evidence AUTO_APPROVE → 跳过 wait_for_approval 直接提交。"""
     wt = _make_git_worktree(tmp_path)
-    config = _config(wt, VerifyConfig(test_command="python -c 'pass'"))
+    config = _config(wt, VerifyConfig(test_command="python3 -c 'pass'"))
     session, storage, wait_calls = await _run_write_session(config, wt)
     assert "__final__" not in wait_calls
     assert session._committed is True
@@ -151,7 +151,7 @@ async def test_auto_approve_skips_final_wait_and_commits(tmp_path):
 async def test_block_still_waits_for_approval(tmp_path):
     """test_command 失败 → evidence BLOCK → 不静默提交，仍走 wait_for_approval。"""
     wt = _make_git_worktree(tmp_path)
-    config = _config(wt, VerifyConfig(test_command="python -c 'raise SystemExit(1)'"))
+    config = _config(wt, VerifyConfig(test_command="python3 -c 'raise SystemExit(1)'"))
     session, storage, wait_calls = await _run_write_session(config, wt)
     assert "__final__" in wait_calls
     assert session._committed is False
@@ -222,7 +222,7 @@ async def test_invalid_test_command_degrades_not_crash(tmp_path):
 async def test_evidence_save_failure_degrades_not_crash(tmp_path):
     """evidence 落库失败 → 降级人工，不摧毁会话。"""
     wt = _make_git_worktree(tmp_path)
-    config = _config(wt, VerifyConfig(test_command="python -c 'pass'"))
+    config = _config(wt, VerifyConfig(test_command="python3 -c 'pass'"))
     storage = MagicMock()
     storage.save_evidence.side_effect = RuntimeError("disk full")
     session, wait_calls = await _run_write_session_with_storage(config, wt, storage)
