@@ -427,3 +427,212 @@ class TestCreateWorktreeIdempotent:
             text=True,
         ).stdout.strip()
         assert branch == "live-edit/sess-survivor"
+
+
+class TestGitConsole:
+    """Admin git console: working-tree / stash / remote / graph operations.
+
+    Adapted from live-build's git console tests; branch prefix is live-edit/ and
+    the graph marker key is is_live_edit.
+    """
+
+    def test_diff_staged_and_unstaged(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "f.py").write_text("v1")
+        subprocess.run(["git", "add", "f.py"], cwd=str(git_repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "v1"], cwd=str(git_repo), capture_output=True)
+        (git_repo / "f.py").write_text("v2")
+        unstaged = vcs.diff(path="f.py", staged=False)
+        assert "+v2" in unstaged and "-v1" in unstaged
+        subprocess.run(["git", "add", "f.py"], cwd=str(git_repo), capture_output=True)
+        staged = vcs.diff(path="f.py", staged=True)
+        assert "+v2" in staged
+
+    def test_diff_untracked_file_exit1_is_success(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "new.txt").write_text("hello\n")
+        d = vcs.diff(path="new.txt", staged=False)
+        assert "+hello" in d
+
+    def test_stage_all_then_unstage_all(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "s1.txt").write_text("a")
+        (git_repo / "s2.txt").write_text("b")
+        assert vcs.stage()["ok"] is True
+        st = vcs.status()
+        assert {f["path"] for f in st["staged"]} >= {"s1.txt", "s2.txt"}
+        assert vcs.unstage()["ok"] is True
+        st2 = vcs.status()
+        assert {f["path"] for f in st2["staged"]} == set()
+
+    def test_status_classifies_three_groups(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "tracked.txt").write_text("base")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=str(git_repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "base"], cwd=str(git_repo), capture_output=True)
+        (git_repo / "tracked.txt").write_text("modified")
+        (git_repo / "untracked.txt").write_text("new")
+        st = vcs.status()
+        assert any(f["path"] == "tracked.txt" for f in st["unstaged"])
+        assert any(f["path"] == "untracked.txt" for f in st["untracked"])
+        assert st["clean"] is False
+
+    def test_commit_staged_and_rejects_empty(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "c.py").write_text("print(1)")
+        subprocess.run(["git", "add", "c.py"], cwd=str(git_repo), capture_output=True)
+        result = vcs.commit_staged("manual: add c.py")
+        assert result["ok"] is True and result["commit_hash"]
+        # 空暂存区 → 拒绝
+        result2 = vcs.commit_staged("should fail")
+        assert result2["ok"] is False
+        assert "暂存" in result2["error"]
+
+    def test_stash_push_list_pop_roundtrip(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "w.txt").write_text("change")
+        subprocess.run(["git", "add", "w.txt"], cwd=str(git_repo), capture_output=True)
+        push = vcs.stash_push("wip")
+        assert push["ok"] is True and push["index"] == 0
+        assert vcs.is_clean() is True
+        entries = vcs.stash_list()
+        assert len(entries) == 1 and entries[0]["index"] == 0 and "wip" in entries[0]["message"]
+        # date 必须被 git 展开为 ISO 时间，不是字面量 %(committerdate:iso)
+        assert entries[0]["date"].startswith("20")
+        pop = vcs.stash_pop()
+        assert pop["ok"] is True and pop["conflicts"] is False
+        assert (git_repo / "w.txt").read_text() == "change"
+
+    def test_stash_drop(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "d.txt").write_text("x")
+        subprocess.run(["git", "add", "d.txt"], cwd=str(git_repo), capture_output=True)
+        vcs.stash_push("to drop")
+        assert vcs.stash_drop(0)["ok"] is True
+        assert vcs.stash_list() == []
+
+    def test_stash_pop_reject_overlapping_changes(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "o.txt").write_text("base")
+        subprocess.run(["git", "add", "o.txt"], cwd=str(git_repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "base"], cwd=str(git_repo), capture_output=True)
+        (git_repo / "o.txt").write_text("stashed")
+        subprocess.run(["git", "add", "o.txt"], cwd=str(git_repo), capture_output=True)
+        vcs.stash_push("overlap")
+        # 工作区有与 o.txt 重叠的未提交修改 → git 拒绝应用
+        (git_repo / "o.txt").write_text("working")
+        result = vcs.stash_pop()
+        assert result["ok"] is False
+        assert "重叠" in result["error"]
+        # stash 条目保留
+        assert len(vcs.stash_list()) == 1
+
+    def test_stash_push_index_is_0_with_existing(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        (git_repo / "a.txt").write_text("a")
+        subprocess.run(["git", "add", "a.txt"], cwd=str(git_repo), capture_output=True)
+        vcs.stash_push("first")
+        (git_repo / "b.txt").write_text("b")
+        subprocess.run(["git", "add", "b.txt"], cwd=str(git_repo), capture_output=True)
+        push = vcs.stash_push("second")
+        assert push["ok"] is True and push["index"] == 0  # 新 stash 恒为 0
+        assert len(vcs.stash_list()) == 2
+
+    def _setup_graph_repo(self, tmp_path):
+        repo = tmp_path / "graph"
+        subprocess.run(["git", "init", "-q", str(repo)], capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=str(repo), capture_output=True
+        )
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True)
+        (repo / "a.txt").write_text("a")
+        subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(repo), capture_output=True)
+        subprocess.run(["git", "branch", "-M", "main"], cwd=str(repo), capture_output=True)
+        # live-edit 分支
+        subprocess.run(
+            ["git", "checkout", "-b", "live-edit/le1", "main"], cwd=str(repo), capture_output=True
+        )
+        (repo / "feat.txt").write_text("feat")
+        subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "live-edit: add feat"], cwd=str(repo), capture_output=True
+        )
+        subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True)
+        return str(repo)
+
+    def test_graph_structure_and_markers(self, tmp_path):
+        repo = self._setup_graph_repo(tmp_path)
+        vcs = GitVCS(repo)
+        g = vcs.graph()
+        assert g["main_branch"] == "main"
+        refs = {r["name"]: r for r in g["refs"]}
+        assert "live-edit/le1" in refs
+        assert refs["live-edit/le1"]["type"] == "live-edit"
+        assert refs["live-edit/le1"]["session_id"] == "le1"
+        tip = next(c for c in g["commits"] if "live-edit/le1" in c["refs"])
+        assert tip["is_live_edit"] is True
+        assert tip["merged"] is False
+        assert tip["ahead"] == 1
+        assert tip["conflict"] is False
+        hashes = {c["hash"] for c in g["commits"]}
+        assert all(p in hashes for c in g["commits"] for p in c["parents"])
+
+    def test_merge_conflicts(self, tmp_path):
+        repo = self._setup_graph_repo(tmp_path)
+        vcs = GitVCS(repo)
+        # 主分支也改 feat.txt → 合并必然冲突
+        (tmp_path / "graph" / "feat.txt").write_text("main-feat")
+        subprocess.run(["git", "add", "."], cwd=str(tmp_path / "graph"), capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "main change"],
+            cwd=str(tmp_path / "graph"),
+            capture_output=True,
+        )
+        assert vcs.merge_conflicts("live-edit/le1") is True
+        assert vcs.merge_conflicts("main") is False
+
+    def test_checkout_clean_success_and_detach(self, tmp_path):
+        repo = self._setup_graph_repo(tmp_path)
+        vcs = GitVCS(repo)
+        subprocess.run(["git", "checkout", "-b", "other", "main"], cwd=repo, capture_output=True)
+        result = vcs.checkout("main")
+        assert result["ok"] is True
+        assert result["detached"] is False
+        # 检出历史提交 → detach
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+        ).stdout.strip()
+        result2 = vcs.checkout(head)
+        assert result2["ok"] is True
+        assert result2["detached"] is True
+
+    def test_checkout_rejects_dirty(self, tmp_path):
+        repo = self._setup_graph_repo(tmp_path)
+        vcs = GitVCS(repo)
+        (tmp_path / "graph" / "dirty.txt").write_text("d")
+        subprocess.run(["git", "add", "dirty.txt"], cwd=repo, capture_output=True)
+        result = vcs.checkout("main")
+        assert result["ok"] is False
+        assert "提交" in result["error"]
+
+    def test_list_remotes(self, git_repo, tmp_path):
+        origin = tmp_path / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-q", "--initial-branch=main", str(origin)],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(origin)],
+            cwd=str(git_repo),
+            capture_output=True,
+        )
+        vcs = GitVCS(str(git_repo))
+        remotes = vcs.list_remotes()
+        assert any(r["name"] == "origin" for r in remotes)
+
+    def test_push_safe_no_origin(self, git_repo):
+        vcs = GitVCS(str(git_repo))
+        result = vcs.push_safe()
+        assert result["ok"] is False
+        assert "origin" in result["error"]

@@ -650,3 +650,206 @@ class TestContinueRecovery:
         resp = client.post("/live-edit/continue/s-recover", json={"request": "keep going"})
 
         assert resp.status_code == 200
+
+
+class TestAdminGitConsole:
+    """HTTP tests for /admin/git/* endpoints (admin git console, backend-only).
+
+    Uses a MagicMock VCS backed by a real git repo, matching the branch_client
+    pattern. Asserts inline admin-key gating: no key → 403, bad key → 403,
+    valid key → delegated to vcs methods.
+    """
+
+    @pytest.fixture
+    def git_app(self, tmp_path):
+        import subprocess as _sp
+
+        from live_edit.router import setup_live_edit
+
+        config_path = tmp_path / ".live-edit.toml"
+        config_path.write_text(
+            """
+[project]
+name = "demo"
+language = "python"
+root = "."
+"""
+        )
+        _sp.run(["git", "init", "-q", "-b", "main"], cwd=str(tmp_path), capture_output=True)
+        _sp.run(["git", "config", "user.email", "t@t.com"], cwd=str(tmp_path), capture_output=True)
+        _sp.run(["git", "config", "user.name", "T"], cwd=str(tmp_path), capture_output=True)
+        (tmp_path / "init.txt").write_text("init")
+        _sp.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+        _sp.run(["git", "commit", "-m", "live-edit: init"], cwd=str(tmp_path), capture_output=True)
+
+        mock_vcs = MagicMock()
+        mock_vcs.repo_path = str(tmp_path)
+        mock_vcs.status.return_value = {
+            "branch": "main",
+            "clean": True,
+            "staged": [],
+            "unstaged": [],
+            "untracked": [],
+        }
+        mock_vcs.graph.return_value = {"main_branch": "main", "refs": [], "commits": []}
+        mock_vcs.stash_list.return_value = [
+            {"index": 0, "message": "On main: wip", "date": "2026-08-13 12:00:00 +0800"}
+        ]
+
+        router = setup_live_edit(
+            project_root=str(tmp_path),
+            config_path=str(config_path),
+            provider=FakeProvider(),
+            storage=MagicMock(),
+            vcs=mock_vcs,
+            admin_key="admin-secret",
+        )
+        app = FastAPI()
+        app.include_router(router)
+        app.state.vcs = mock_vcs
+        return app, mock_vcs
+
+    def test_all_git_endpoints_reject_without_admin_key(self, git_app):
+        app, _ = git_app
+        client = TestClient(app)
+        for method, path in [
+            ("get", "/live-edit/admin/git/status"),
+            ("get", "/live-edit/admin/git/diff"),
+            ("get", "/live-edit/admin/git/stash"),
+            ("get", "/live-edit/admin/git/graph"),
+            ("post", "/live-edit/admin/git/stage"),
+            ("post", "/live-edit/admin/git/unstage"),
+            ("post", "/live-edit/admin/git/commit"),
+            ("post", "/live-edit/admin/git/stash"),
+            ("post", "/live-edit/admin/git/stash/pop"),
+            ("post", "/live-edit/admin/git/stash/drop"),
+            ("post", "/live-edit/admin/git/pull"),
+            ("post", "/live-edit/admin/git/push"),
+            ("post", "/live-edit/admin/git/checkout"),
+        ]:
+            kwargs = {} if method == "get" else {"json": {}}
+            resp = getattr(client, method)(path, **kwargs)
+            assert resp.status_code == 403, f"{method} {path}"
+
+    def test_status_returns_working_tree(self, git_app):
+        app, mock_vcs = git_app
+        client = TestClient(app)
+        resp = client.get("/live-edit/admin/git/status", headers={"X-Admin-Key": "admin-secret"})
+        assert resp.status_code == 200
+        assert resp.json()["clean"] is True
+        mock_vcs.status.assert_called_once()
+
+    def test_diff_passes_file_and_staged(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.diff.return_value = "+hi\n-hello\n"
+        client = TestClient(app)
+        resp = client.get(
+            "/live-edit/admin/git/diff",
+            params={"file": "a.py", "staged": "true"},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert "+hi" in resp.json()["diff"]
+        mock_vcs.diff.assert_called_once_with(path="a.py", staged=True)
+
+    def test_commit_empty_message_400(self, git_app):
+        app, _ = git_app
+        client = TestClient(app)
+        resp = client.post(
+            "/live-edit/admin/git/commit",
+            json={"message": "   "},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 400
+
+    def test_commit_success(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.commit_staged.return_value = {"ok": True, "commit_hash": "abc1234"}
+        client = TestClient(app)
+        resp = client.post(
+            "/live-edit/admin/git/commit",
+            json={"message": "live-edit: via console"},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["commit_hash"] == "abc1234"
+        mock_vcs.commit_staged.assert_called_once()
+
+    def test_stash_list_and_push(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.stash_push.return_value = {"ok": True, "index": 0}
+        client = TestClient(app)
+        headers = {"X-Admin-Key": "admin-secret"}
+        # list
+        resp = client.get("/live-edit/admin/git/stash", headers=headers)
+        assert resp.status_code == 200
+        assert len(resp.json()["entries"]) == 1
+        # push
+        resp = client.post("/live-edit/admin/git/stash", json={"message": "wip"}, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["index"] == 0
+        mock_vcs.stash_push.assert_called_once_with("wip")
+
+    def test_stash_pop_conflict_keeps_stash(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.stash_pop.return_value = {
+            "ok": True,
+            "conflicts": True,
+            "message": "冲突已写入工作区，stash 保留",
+        }
+        client = TestClient(app)
+        resp = client.post(
+            "/live-edit/admin/git/stash/pop",
+            json={"index": 0},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["conflicts"] is True
+
+    def test_push_safe_diverged_returns_409(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.push_safe.return_value = {
+            "ok": False,
+            "diverged": True,
+            "message": "本地与远端已分叉，需人工终端处理",
+        }
+        client = TestClient(app)
+        resp = client.post("/live-edit/admin/git/push", headers={"X-Admin-Key": "admin-secret"})
+        assert resp.status_code == 409
+        assert resp.json()["diverged"] is True
+
+    def test_checkout_empty_ref_400(self, git_app):
+        app, _ = git_app
+        client = TestClient(app)
+        resp = client.post(
+            "/live-edit/admin/git/checkout",
+            json={"ref": ""},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 400
+
+    def test_checkout_dirty_rejects(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.checkout.return_value = {
+            "ok": False,
+            "error": "工作区有未提交改动，请先提交或储藏",
+        }
+        client = TestClient(app)
+        resp = client.post(
+            "/live-edit/admin/git/checkout",
+            json={"ref": "main"},
+            headers={"X-Admin-Key": "admin-secret"},
+        )
+        assert resp.status_code == 409
+        mock_vcs.checkout.assert_called_once_with("main")
+
+    def test_graph_returns_ok_wrapped(self, git_app):
+        app, mock_vcs = git_app
+        mock_vcs.graph.return_value = {"main_branch": "main", "refs": [], "commits": []}
+        client = TestClient(app)
+        resp = client.get("/live-edit/admin/git/graph", headers={"X-Admin-Key": "admin-secret"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["main_branch"] == "main"

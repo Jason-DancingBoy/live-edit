@@ -53,6 +53,30 @@ class BatchApproveRequest(BaseModel):
     enabled: bool = True
 
 
+class StageRequest(BaseModel):
+    paths: list[str] | None = None
+
+
+class CommitRequest(BaseModel):
+    message: str = ""
+
+
+class StashRequest(BaseModel):
+    message: str = ""
+
+
+class StashDropRequest(BaseModel):
+    index: int = 0
+
+
+class StashPopRequest(BaseModel):
+    index: int | None = None
+
+
+class CheckoutRequest(BaseModel):
+    ref: str = ""
+
+
 class KnowledgeUpload(BaseModel):
     source_path: str
     content: str
@@ -1172,5 +1196,296 @@ def setup_live_edit(
         except Exception as e:
             logger.error("admin_delete_branch error: %s", e)
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ── Admin git console (working tree / stash / remote ops) ──
+
+    @router.get("/admin/git/status")
+    async def git_status(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Working-tree status for the admin git console."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_status", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            result = vcs.status()
+        except Exception as e:
+            audit_log.record("git_status", target="", result="error", detail={"message": str(e)})
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        audit_log.record("git_status", target="", result="ok")
+        return result
+
+    @router.get("/admin/git/diff")
+    async def git_diff(
+        file: str = Query(default=""),
+        staged: bool = Query(default=False),
+        x_admin_key: str = Header("", alias="X-Admin-Key"),
+    ):
+        """Unified diff for a file (or all), staged or not."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_diff", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        diff_text = vcs.diff(path=file, staged=staged)
+        audit_log.record("git_diff", target=file or "(all)", result="ok")
+        return {"ok": True, "diff": diff_text}
+
+    @router.post("/admin/git/stage")
+    async def git_stage(req: StageRequest, x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Stage all (null) or given paths."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_stage", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.stage(req.paths)
+        if not result.get("ok"):
+            audit_log.record(
+                "git_stage", target="", result="error", detail={"message": result.get("error", "")}
+            )
+            raise HTTPException(status_code=400, detail=result.get("error", "暂存失败"))
+        audit_log.record("git_stage", target="", result="ok")
+        return {"ok": True}
+
+    @router.post("/admin/git/unstage")
+    async def git_unstage(req: StageRequest, x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Unstage all (null) or given paths."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_unstage", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.unstage(req.paths)
+        if not result.get("ok"):
+            audit_log.record(
+                "git_unstage",
+                target="",
+                result="error",
+                detail={"message": result.get("error", "")},
+            )
+            raise HTTPException(status_code=400, detail=result.get("error", "取消暂存失败"))
+        audit_log.record("git_unstage", target="", result="ok")
+        return {"ok": True}
+
+    @router.post("/admin/git/commit")
+    async def git_commit(req: CommitRequest, x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Commit staged changes with a message."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_commit", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        message = (req.message or "").strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="提交消息不能为空")
+        result = vcs.commit_staged(message)
+        if not result.get("ok"):
+            audit_log.record(
+                "git_commit", target="", result="error", detail={"message": result.get("error", "")}
+            )
+            raise HTTPException(status_code=400, detail=result.get("error", "提交失败"))
+        audit_log.record("git_commit", target=result.get("commit_hash", ""), result="ok")
+        return result
+
+    @router.get("/admin/git/stash")
+    async def git_stash_list(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """List stash entries."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_stash_list", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        audit_log.record("git_stash_list", target="", result="ok")
+        return {"entries": vcs.stash_list()}
+
+    @router.post("/admin/git/stash")
+    async def git_stash_push(req: StashRequest, x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Create a stash with an optional message."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_stash_push", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.stash_push(req.message or "")
+        if not result.get("ok"):
+            audit_log.record(
+                "git_stash_push",
+                target="",
+                result="error",
+                detail={"message": result.get("error", "")},
+            )
+            raise HTTPException(status_code=400, detail=result.get("error", "储藏失败"))
+        audit_log.record(
+            "git_stash_push", target=f"stash@{{{result.get('index', 0)}}}", result="ok"
+        )
+        return result
+
+    @router.post("/admin/git/stash/pop")
+    async def git_stash_pop(
+        req: StashPopRequest | None = None,
+        x_admin_key: str = Header("", alias="X-Admin-Key"),
+    ):
+        """Pop stash@{index} (top when omitted); conflict keeps the stash and reports it."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_stash_pop", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        index = req.index if req else None
+        target = f"stash@{{{index}}}" if index is not None else ""
+        result = vcs.stash_pop(index)
+        if result.get("conflicts"):
+            audit_log.record(
+                "git_stash_pop",
+                target=target,
+                result="conflict",
+                detail={"message": result.get("message", "")},
+            )
+            return {
+                "ok": True,
+                "conflicts": True,
+                "message": result.get("message", "冲突已写入工作区，stash 保留"),
+            }
+        if not result.get("ok"):
+            audit_log.record(
+                "git_stash_pop",
+                target=target,
+                result="error",
+                detail={"message": result.get("error", "")},
+            )
+            raise HTTPException(status_code=409, detail=result.get("error", "恢复失败"))
+        audit_log.record("git_stash_pop", target=target, result="ok")
+        return {"ok": True, "conflicts": False}
+
+    @router.post("/admin/git/stash/drop")
+    async def git_stash_drop(
+        req: StashDropRequest, x_admin_key: str = Header("", alias="X-Admin-Key")
+    ):
+        """Drop a specific stash entry."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_stash_drop", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.stash_drop(req.index)
+        if not result.get("ok"):
+            audit_log.record(
+                "git_stash_drop",
+                target=f"stash@{{{req.index}}}",
+                result="error",
+                detail={"message": result.get("error", "")},
+            )
+            raise HTTPException(status_code=400, detail=result.get("error", "丢弃失败"))
+        audit_log.record("git_stash_drop", target=f"stash@{{{req.index}}}", result="ok")
+        return {"ok": True}
+
+    @router.post("/admin/git/pull")
+    async def git_pull(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Fast-forward-only pull from origin."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_pull", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.pull_ff()
+        if not result.get("ok"):
+            audit_log.record(
+                "git_pull", target="", result="error", detail={"message": result.get("error", "")}
+            )
+            raise HTTPException(status_code=409, detail=result.get("error", "拉取失败"))
+        audit_log.record("git_pull", target="", result="ok")
+        return result
+
+    @router.post("/admin/git/push")
+    async def git_push(x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Safe push: ff-only pull first, no force, divergence reported."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_push", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.push_safe()
+        if not result.get("ok"):
+            detail = result.get("message") or result.get("error", "推送失败")
+            audit_log.record("git_push", target="", result="error", detail={"message": detail})
+            if result.get("diverged"):
+                return JSONResponse(status_code=409, content={"detail": detail, "diverged": True})
+            if result.get("needs_pull"):
+                return JSONResponse(status_code=409, content={"detail": detail, "needs_pull": True})
+            raise HTTPException(status_code=400, detail=detail)
+        audit_log.record(
+            "git_push",
+            target="",
+            result="ok",
+            detail={"commits_ahead": result.get("commits_ahead", 0)},
+        )
+        return result
+
+    @router.get("/admin/git/graph")
+    async def git_graph(
+        limit: int = Query(default=50, le=100),
+        x_admin_key: str = Header("", alias="X-Admin-Key"),
+    ):
+        """Commit-graph data for the admin visualization."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_graph", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        try:
+            result = vcs.graph(limit=limit)
+        except Exception as e:
+            audit_log.record("git_graph", target="", result="error", detail={"message": str(e)})
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        audit_log.record("git_graph", target="", result="ok")
+        return {"ok": True, **result}
+
+    @router.get("/admin/git/commit/{commit_hash}")
+    async def git_commit_show(commit_hash: str, x_admin_key: str = Header("", alias="X-Admin-Key")):
+        """Full diff for a single commit."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_commit_show", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        result = vcs.show_commit(commit_hash)
+        audit_log.record(
+            "git_commit_show",
+            target=commit_hash,
+            result="ok" if result.get("ok") else "error",
+            detail={"message": result.get("error", "")},
+        )
+        return result
+
+    @router.post("/admin/git/checkout")
+    async def git_checkout(
+        req: CheckoutRequest, x_admin_key: str = Header("", alias="X-Admin-Key")
+    ):
+        """Checkout a branch or commit; rejects a dirty working tree."""
+        if not admin_key or x_admin_key != admin_key:
+            audit_log.record(
+                "failed_admin_auth", actor="unknown", target="git_checkout", result="blocked"
+            )
+            raise HTTPException(status_code=403, detail="需要有效的 admin key")
+        ref = (req.ref or "").strip()
+        if not ref:
+            raise HTTPException(status_code=400, detail="检出目标不能为空")
+        result = vcs.checkout(ref)
+        if not result.get("ok"):
+            audit_log.record(
+                "git_checkout",
+                target=ref,
+                result="error",
+                detail={"message": result.get("error", "")},
+            )
+            raise HTTPException(status_code=409, detail=result.get("error", "检出失败"))
+        audit_log.record(
+            "git_checkout",
+            target=ref,
+            result="ok",
+            detail={"detached": result.get("detached", False)},
+        )
+        return result
 
     return router

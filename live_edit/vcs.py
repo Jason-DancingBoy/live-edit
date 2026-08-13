@@ -146,6 +146,90 @@ class VCS(ABC):
         """Return the name of the main branch (main or master)."""
         ...
 
+    @abstractmethod
+    def status(self) -> dict:
+        """工作区状态，含 staged/unstaged/untracked 分组。"""
+        ...
+
+    @abstractmethod
+    def is_clean(self) -> bool:
+        """已跟踪文件无未提交改动时为 True。"""
+        ...
+
+    @abstractmethod
+    def diff(self, path: str = "", staged: bool = False) -> str:
+        """指定路径（或全部）的 unified diff，支持已暂存/未暂存。"""
+        ...
+
+    @abstractmethod
+    def stage(self, paths: list[str] | None = None) -> dict:
+        """暂存全部（None）或指定路径。"""
+        ...
+
+    @abstractmethod
+    def unstage(self, paths: list[str] | None = None) -> dict:
+        """取消暂存全部（None）或指定路径。"""
+        ...
+
+    @abstractmethod
+    def commit_staged(self, message: str) -> dict:
+        """仅提交已暂存改动；索引为空时返回 ok=False。"""
+        ...
+
+    @abstractmethod
+    def stash_push(self, message: str = "") -> dict:
+        """储藏工作区改动；返回新的 stash 索引。"""
+        ...
+
+    @abstractmethod
+    def stash_list(self) -> list:
+        """列出 stash 条目为 {index, message, date}。"""
+        ...
+
+    @abstractmethod
+    def stash_pop(self, index: int | None = None) -> dict:
+        """弹出 stash@{index}（None 时弹顶部）；冲突时保留 stash 条目。"""
+        ...
+
+    @abstractmethod
+    def stash_drop(self, index: int) -> dict:
+        """删除 stash@{index}。"""
+        ...
+
+    # ── Admin git console: remotes / pull / push ──
+
+    @abstractmethod
+    def list_remotes(self) -> list:
+        """列出 git remote 为 [{name, url}]。"""
+        ...
+
+    @abstractmethod
+    def pull_ff(self) -> dict:
+        """git pull --ff-only；返回 {ok, message, error}。"""
+        ...
+
+    @abstractmethod
+    def push_safe(self) -> dict:
+        """安全推送：不强制、先 ff-only 拉取、分叉时上报。"""
+        ...
+
+    # ── Admin git console: commit graph / conflict prediction / checkout ──
+
+    @abstractmethod
+    def graph(self, limit: int = 50) -> dict:
+        """提交图数据，含分支状态标记。"""
+        ...
+
+    @abstractmethod
+    def merge_conflicts(self, branch: str):
+        """用 git merge-tree 预测合并冲突；返回 bool 或 None。"""
+        ...
+
+    @abstractmethod
+    def checkout(self, ref: str) -> dict:
+        """检出分支或提交；拒绝脏工作区。"""
+        ...
+
 
 class GitVCS(VCS):
     """Git VCS with worktree support for parallel session isolation."""
@@ -174,6 +258,509 @@ class GitVCS(VCS):
                 return candidate
         self._main_branch = "main"
         return "main"
+
+    # ── Admin git console ──
+
+    def _remote_for(self, branch: str) -> bool:
+        check = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return check.returncode == 0
+
+    def _count_ahead_behind(self, branch: str) -> tuple[int, int]:
+        if not self._remote_for(branch):
+            # 分支从未推送：ahead = 不在任何远程 ref 上的本地提交数
+            count = subprocess.run(
+                ["git", "rev-list", "--count", "HEAD", "--not", "--remotes"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            ahead = int(count.stdout.strip()) if count.returncode == 0 else 0
+            return ahead, 0
+        result = subprocess.run(
+            ["git", "rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return 0, 0
+        parts = result.stdout.strip().split()
+        if len(parts) == 2:
+            return int(parts[1]), int(parts[0])  # (ahead, behind)
+        return 0, 0
+
+    def list_remotes(self) -> list:
+        result = subprocess.run(
+            ["git", "remote"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        remotes = []
+        for name in result.stdout.splitlines():
+            url = subprocess.run(
+                ["git", "remote", "get-url", name],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            remotes.append({"name": name, "url": url})
+        return remotes
+
+    def pull_ff(self) -> dict:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        return {"ok": True, "message": "已拉取"}
+
+    def push_safe(self) -> dict:
+        remotes = {r["name"] for r in self.list_remotes()}
+        if "origin" not in remotes:
+            return {"ok": False, "error": "未配置 origin remote"}
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        fetch = subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if fetch.returncode != 0:
+            return {"ok": False, "error": fetch.stderr[:1000]}
+        ahead, behind = self._count_ahead_behind(branch)
+        if behind > 0 and ahead > 0:
+            return {"ok": False, "diverged": True, "message": "本地与远端已分叉，需人工终端处理"}
+        if behind > 0:
+            return {"ok": False, "needs_pull": True, "message": "远端领先本地，请先拉取"}
+        # 分支从未推送（origin/<branch> 不存在）时没有可拉取的远端，跳过 ff-only pull
+        if self._remote_for(branch):
+            pull = subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if pull.returncode != 0:
+                return {"ok": False, "error": pull.stderr[:1000]}
+        push = subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if push.returncode != 0:
+            return {"ok": False, "error": push.stderr[:1000]}
+        return {
+            "ok": True,
+            "pushed": True,
+            "commits_ahead": ahead,
+            "message": f"已推送 {ahead} 个提交",
+        }
+
+    # ── Admin git console: commit graph / conflict prediction / checkout ──
+
+    def _parse_decorate(self, decorated: str) -> list:
+        if not decorated.strip():
+            return []
+        text = decorated.strip()
+        if text.startswith("HEAD -> "):
+            text = text[len("HEAD -> ") :]
+        return [r.strip() for r in text.split(",") if r.strip()]
+
+    def _collect_refs(self, commits: list, main: str) -> list:
+        seen: dict[str, dict] = {}
+        for c in commits:
+            for name in c["refs"]:
+                if name in seen:
+                    continue
+                if name.startswith("origin/"):
+                    rtype = "remote"
+                elif name == main:
+                    rtype = "main"
+                elif name.startswith("live-edit/"):
+                    rtype = "live-edit"
+                else:
+                    rtype = "branch"
+                sid = name[len("live-edit/") :] if rtype == "live-edit" else ""
+                seen[name] = {"name": name, "type": rtype, "session_id": sid}
+        return list(seen.values())
+
+    def _is_ancestor(self, branch: str, main: str) -> bool:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", branch, main],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+
+    def _branch_ahead_behind(self, main: str, branch: str) -> tuple[int, int]:
+        result = subprocess.run(
+            ["git", "rev-list", "--left-right", "--count", f"{main}...{branch}"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return 0, 0
+        parts = result.stdout.strip().split()
+        if len(parts) == 2:
+            return int(parts[1]), int(parts[0])
+        return 0, 0
+
+    def _annotate_branch_status(self, commits: list, main: str):
+        for c in commits:
+            c["merged"] = True
+            c["ahead"] = 0
+            c["behind"] = 0
+            c["conflict"] = False
+        live_tips: dict[str, str] = {}
+        for c in commits:
+            for name in c["refs"]:
+                if name.startswith("live-edit/"):
+                    live_tips.setdefault(name, c["hash"])
+        for branch, tip_hash in live_tips.items():
+            tip = next((c for c in commits if c["hash"] == tip_hash), None)
+            if tip is None:
+                continue
+            merged = self._is_ancestor(branch, main)
+            ahead, behind = self._branch_ahead_behind(main, branch)
+            tip["merged"] = merged
+            tip["ahead"] = ahead
+            tip["behind"] = behind
+            tip["conflict"] = self.merge_conflicts(branch) if not merged else False
+
+    def graph(self, limit: int = 50) -> dict:
+        main = self.get_main_branch()
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                "--all",
+                "--exclude=refs/stash",
+                f"-n{limit}",
+                "--format=%H%x00%P%x00%s%x00%ai%x00%D",
+            ],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        commits = []
+        for line in result.stdout.split("\n"):
+            if not line:
+                continue
+            parts = line.split("\x00")
+            if len(parts) < 5:
+                continue
+            hash_, parents_raw, subject, date, decorated = parts[:5]
+            parents = [p for p in parents_raw.split() if p]
+            commits.append(
+                {
+                    "hash": hash_,
+                    "parents": parents,
+                    "subject": subject,
+                    "date": date,
+                    "refs": self._parse_decorate(decorated),
+                    "is_head": "HEAD" in decorated,
+                    "is_live_edit": subject.startswith("live-edit:")
+                    or subject.startswith("dev-mode:"),
+                    "is_merge": len(parents) > 1,
+                }
+            )
+        self._annotate_branch_status(commits, main)
+        return {"main_branch": main, "refs": self._collect_refs(commits, main), "commits": commits}
+
+    def merge_conflicts(self, branch: str):
+        main = self.get_main_branch()
+        result = subprocess.run(
+            ["git", "merge-tree", "--write-tree", main, branch],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return False
+        if result.returncode == 1:
+            return True
+        return None
+
+    def checkout(self, ref: str) -> dict:
+        if not self.is_clean():
+            return {"ok": False, "error": "工作区有未提交改动，请先提交或储藏"}
+        result = subprocess.run(
+            ["git", "checkout", ref],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        symbolic = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return {"ok": True, "message": f"已检出 {ref}", "detached": symbolic.returncode != 0}
+
+    def status(self) -> dict:
+        branch = (
+            subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            or "HEAD"
+        )
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        staged: list[dict] = []
+        unstaged: list[dict] = []
+        untracked: list[dict] = []
+        merging = False
+        for line in porcelain.splitlines():
+            if not line:
+                continue
+            x, y = line[0], line[1]
+            path = line[3:]
+            if line.startswith("??"):
+                untracked.append({"path": path, "status": "??"})
+                continue
+            if "U" in (x + y):
+                merging = True
+                staged.append({"path": path, "status": x + y})
+                continue
+            if x != " ":
+                staged.append({"path": path, "status": x + y})
+            if y not in (" ", "?"):
+                unstaged.append({"path": path, "status": x + y})
+        ahead, behind = self._count_ahead_behind(branch)
+        return {
+            "branch": branch,
+            "ahead": ahead,
+            "behind": behind,
+            "clean": not (staged or unstaged or untracked or merging),
+            "merge_state": "merging" if merging else "",
+            "staged": staged,
+            "unstaged": unstaged,
+            "untracked": untracked,
+        }
+
+    def is_clean(self) -> bool:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "-uno"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return not result.stdout.strip()
+
+    def diff(self, path: str = "", staged: bool = False) -> str:
+        if path and not staged:
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", "--", path],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if tracked.returncode != 0:
+                # 未跟踪文件：渲染为新增 diff；--no-index 有差异时 exit 1 属正常
+                result = subprocess.run(
+                    ["git", "diff", "--no-index", "--", "/dev/null", path],
+                    cwd=self.repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return result.stdout.strip()
+        args = ["git", "diff"]
+        if staged:
+            args.append("--cached")
+        args += ["--"]
+        if path:
+            args.append(path)
+        result = subprocess.run(
+            args,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+
+    def stage(self, paths=None) -> dict:
+        args = ["git", "add", "-A"] if paths is None else ["git", "add", "--"] + list(paths)
+        result = subprocess.run(
+            args,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        return {"ok": True}
+
+    def unstage(self, paths=None) -> dict:
+        args = ["git", "reset", "HEAD", "--"]
+        if paths is not None:
+            args += list(paths)
+        result = subprocess.run(
+            args,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        return {"ok": True}
+
+    def commit_staged(self, message: str) -> dict:
+        quiet = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if quiet.returncode == 0:
+            return {"ok": False, "error": "请先暂存"}
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return {"ok": True, "commit_hash": rev.stdout.strip()}
+
+    def stash_push(self, message: str = "") -> dict:
+        args = ["git", "stash", "push"]
+        if message:
+            args += ["-m", message]
+        result = subprocess.run(
+            args,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        # 新 stash 恒为 stash@{0}（已有条目后移），返回 0 才是真实索引
+        return {"ok": True, "index": 0}
+
+    def stash_list(self) -> list:
+        result = subprocess.run(
+            ["git", "stash", "list", "--format=%gd%x00%gs%x00%ai"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        entries = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\x00")
+            if len(parts) != 3:
+                continue
+            ref = parts[0].strip()
+            idx = ref[ref.find("{") + 1 : ref.find("}")]
+            entries.append(
+                {
+                    "index": int(idx) if idx.isdigit() else 0,
+                    "message": parts[1].strip(),
+                    "date": parts[2].strip(),
+                }
+            )
+        return entries
+
+    def stash_pop(self, index: int | None = None) -> dict:
+        cmd = ["git", "stash", "pop"]
+        if index is not None:
+            cmd.append(f"stash@{{{index}}}")
+        result = subprocess.run(
+            cmd,
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return {"ok": True, "conflicts": False}
+        # 区分两种失败：拒绝应用（工作区有重叠未提交改动）vs 真冲突（改动已写入工作区）。
+        # 不能匹配 stderr 文本——git 报错被 locale 翻译（如中文「本地修改将被合并操作覆盖」）。
+        # 用 porcelain 的 U 码判定（locale 无关）：真冲突会留下 UU 未合并条目。
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain", "-uno"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        if any("U" in line[:2] for line in porcelain.splitlines()):
+            return {"ok": True, "conflicts": True, "message": "冲突已写入工作区，stash 保留"}
+        return {"ok": False, "error": "工作区有重叠未提交改动，请先提交或储藏"}
+
+    def stash_drop(self, index: int) -> dict:
+        result = subprocess.run(
+            ["git", "stash", "drop", f"stash@{{{index}}}"],
+            cwd=self.repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:1000]}
+        return {"ok": True}
 
     # ── Worktree lifecycle ──
 
